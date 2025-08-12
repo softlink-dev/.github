@@ -1,4 +1,4 @@
-name: Gemini PR Review (Reusable)
+name: Gemini PR Review
 
 on:
   workflow_call:
