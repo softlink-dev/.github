@@ -23,29 +23,56 @@ on:
         type: string
         default: '(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|\.lock$|\.min\.(js|css)$|\.map$|\.png$|\.jpe?g$|\.gif$|\.svg$|\.pdf$|\.zip$|\.tar$|\.gz$|\.7z$|\.ico$|\.bmp$'
         required: false
+      policy_path:
+        description: "Path to repo/org review policy file"
+        type: string
+        default: .github/review/REVIEW_POLICY.md
+        required: false
+      control_repo_ref:
+        description: "Branch/ref of the org control repo (.github)"
+        type: string
+        default: main
+        required: false
     secrets:
       GEMINI_API_KEY:
         required: true
 
 jobs:
   review:
+    # Avoid re-running on our own bot commits (prevents loops)
+    if: ${{ github.actor != 'github-actions[bot]' }}
     name: Review PR with Gemini
-    permissions:
-      contents: read
-      pull-requests: write
     runs-on: ubuntu-latest
+    permissions:
+      # We need to commit the review file to the PR head branch
+      contents: write
+      pull-requests: read
 
     env:
       GEMINI_MODEL: ${{ inputs.model }}
       MAX_FILES: ${{ inputs.max_files }}
       MAX_DIFF_LINES: ${{ inputs.max_diff_lines }}
       EXCLUDE_REGEX: ${{ inputs.exclude_regex }}
+      POLICY_PATH: ${{ inputs.policy_path }}
+      CONTROL_REF: ${{ inputs.control_repo_ref }}
 
     steps:
-      - name: Checkout (full history for accurate diff)
+      - name: Checkout PR head (so we can push to the branch)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # On PR events, this checks out the contributor's branch; otherwise fallback
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      # Optional: checkout org .github repo to read the default policy (public recommended)
+      - name: Checkout org .github control repo (for default policy)
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          ref: ${{ env.CONTROL_REF }}
+          path: __org_control
+          fetch-depth: 1
 
       - name: Resolve base/head SHAs
         id: shas
@@ -93,18 +120,33 @@ jobs:
           fi
           echo "### Diff lines included: $(wc -l < diff.patch)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Build prompt (instruct Gemini to self-read files)
+      - name: Locate review policy (repo override or org default)
+        id: policy
+        shell: bash
+        run: |
+          if [ -f "$POLICY_PATH" ]; then
+            echo "path=$POLICY_PATH" >> $GITHUB_OUTPUT
+            echo "scope=repo" >> $GITHUB_OUTPUT
+            echo "found=true" >> $GITHUB_OUTPUT
+          elif [ -f "__org_control/$POLICY_PATH" ]; then
+            echo "path=__org_control/$POLICY_PATH" >> $GITHUB_OUTPUT
+            echo "scope=org" >> $GITHUB_OUTPUT
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build prompt (include policy + self-read paths + diff)
         shell: bash
         run: |
           cat > prompt.md << 'PROMPT'
-You are an exacting senior code reviewer.
+You are an exacting senior C# code reviewer.
 
-Context:
-- You are running on a GitHub Actions runner with the repository checked out.
-- Use your file tools to open files by **absolute path** from the list below for full context.
-- Prioritize regions touched by the diff when inspecting large files.
+If a review policy is provided below, follow it strictly. Then review the PR using:
+  1) Self-reading of the listed absolute file paths for full context (post-change).
+  2) The unified diff to focus on what changed.
 
-Deliverables (in this order):
+Deliverables (prioritized):
 1) High-risk bugs/security issues
 2) Correctness & logic errors
 3) API/contract or backward-compat breaks
@@ -116,16 +158,24 @@ Deliverables (in this order):
 
 Rules:
 - Use file tools to read files (absolute paths only). If a path is missing, say so.
-- Cite file paths and line numbers. For full-file references, cite the file line numbers; for changes, cite diff hunks.
+- Cite file paths and line numbers. For full-file remarks, cite file line numbers; for changes, cite diff hunks.
 - Skip generated/lock/binary files with a one-liner.
 - If context is insufficient, state exactly what you need.
 
---- BEGIN ABSOLUTE PATHS ---
 PROMPT
-          cat abs-files.txt >> prompt.md
-          printf "\n--- END ABSOLUTE PATHS ---\n\n--- BEGIN DIFF ---\n" >> prompt.md
+
+          if [ "${{ steps.policy.outputs.found }}" = "true" ]; then
+            echo -e "\n--- BEGIN REVIEW POLICY (${ {steps.policy.outputs.scope} }) ---" >> prompt.md
+            cat "${{ steps.policy.outputs.path }}" >> prompt.md
+            echo -e "\n--- END REVIEW POLICY ---" >> prompt.md
+          fi
+
+          echo -e "\n--- BEGIN ABSOLUTE PATHS ---" >> prompt.md
+          cat abs-files.txt >> prompt.md || true
+          echo -e "\n--- END ABSOLUTE PATHS ---\n" >> prompt.md
+          echo -e "\n--- BEGIN DIFF ---" >> prompt.md
           cat diff.patch >> prompt.md
-          printf "\n--- END DIFF ---\n" >> prompt.md
+          echo -e "\n--- END DIFF ---" >> prompt.md
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -152,16 +202,22 @@ PROMPT
           echo "### Gemini Review (first 80 lines)" >> "$GITHUB_STEP_SUMMARY"
           head -n 80 review.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Post PR comment
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync('review.md', 'utf8');
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body
-            });
+      - name: Commit review result to PR branch
+        if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork }}
+        shell: bash
+        run: |
+          OUT_DIR=".github/review-results"
+          OUT_FILE="$OUT_DIR/pr-${{ github.event.pull_request.number }}.md"
+          mkdir -p "$OUT_DIR"
+          mv review.md "$OUT_FILE"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$OUT_FILE"
+          git commit -m "chore: add Gemini review for PR #${{ github.event.pull_request.number }} [skip ci]" || echo "No changes to commit"
+          git push
+
+      - name: Note if commit was skipped (forked PR)
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
+        run: |
+          echo "::notice::PR is from a fork; cannot push review file. The review is available in the job summary."
