@@ -26,7 +26,7 @@ on:
       policy_path:
         description: "Path to repo/org review policy file"
         type: string
-        default: .github/review/REVIEW_POLICY.md
+        default: '.github/review/REVIEW_POLICY.md'   # <-- quote the default path
         required: false
       control_repo_ref:
         description: "Branch/ref of the org control repo (.github)"
@@ -44,8 +44,7 @@ jobs:
     name: Review PR with Gemini
     runs-on: ubuntu-latest
     permissions:
-      # We need to commit the review file to the PR head branch
-      contents: write
+      contents: write    # we commit review file
       pull-requests: read
 
     env:
@@ -61,10 +60,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # On PR events, this checks out the contributor's branch; otherwise fallback
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
 
-      # Optional: checkout org .github repo to read the default policy (public recommended)
       - name: Checkout org .github control repo (for default policy)
         continue-on-error: true
         uses: actions/checkout@v4
@@ -78,6 +75,7 @@ jobs:
         id: shas
         shell: bash
         run: |
+          set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
             HEAD="${{ github.event.pull_request.head.sha }}"
@@ -95,6 +93,7 @@ jobs:
         id: files
         shell: bash
         run: |
+          set -euo pipefail
           git diff --name-only --diff-filter=ACMRT "$BASE" "$HEAD" \
             | grep -Eiv "${EXCLUDE_REGEX}" \
             | head -n "${MAX_FILES}" > files.txt || true
@@ -112,6 +111,7 @@ jobs:
       - name: Generate unified diff (unified=0) with guardrail
         shell: bash
         run: |
+          set -euo pipefail
           git diff --unified=0 --no-color "$BASE" "$HEAD" > diff.patch
           LINES=$(wc -l < diff.patch || echo 0)
           if [ "$LINES" -gt "${MAX_DIFF_LINES}" ]; then
@@ -124,45 +124,47 @@ jobs:
         id: policy
         shell: bash
         run: |
+          set -euo pipefail
           if [ -f "$POLICY_PATH" ]; then
-            echo "path=$POLICY_PATH" >> $GITHUB_OUTPUT
-            echo "scope=repo" >> $GITHUB_OUTPUT
-            echo "found=true" >> $GITHUB_OUTPUT
+            echo "path=$POLICY_PATH" >> "$GITHUB_OUTPUT"
+            echo "scope=repo" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
           elif [ -f "__org_control/$POLICY_PATH" ]; then
-            echo "path=__org_control/$POLICY_PATH" >> $GITHUB_OUTPUT
-            echo "scope=org" >> $GITHUB_OUTPUT
-            echo "found=true" >> $GITHUB_OUTPUT
+            echo "path=__org_control/$POLICY_PATH" >> "$GITHUB_OUTPUT"
+            echo "scope=org" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
           else
-            echo "found=false" >> $GITHUB_OUTPUT
+            echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build prompt (include policy + self-read paths + diff)
         shell: bash
         run: |
+          set -euo pipefail
           cat > prompt.md << 'PROMPT'
-You are an exacting senior C# code reviewer.
+          You are an exacting senior C# code reviewer.
 
-If a review policy is provided below, follow it strictly. Then review the PR using:
-  1) Self-reading of the listed absolute file paths for full context (post-change).
-  2) The unified diff to focus on what changed.
+          If a review policy is provided below, follow it strictly. Then review the PR using:
+            1) Self-reading of the listed absolute file paths for full context (post-change).
+            2) The unified diff to focus on what changed.
 
-Deliverables (prioritized):
-1) High-risk bugs/security issues
-2) Correctness & logic errors
-3) API/contract or backward-compat breaks
-4) Performance & resource issues
-5) Concurrency/thread-safety problems
-6) Minimal tests to add (tiny code snippets)
-7) Targeted refactor suggestions (small, mechanical)
-8) Style/consistency nits (brief)
+          Deliverables (prioritized):
+          1) High-risk bugs/security issues
+          2) Correctness & logic errors
+          3) API/contract or backward-compat breaks
+          4) Performance & resource issues
+          5) Concurrency/thread-safety problems
+          6) Minimal tests to add (tiny code snippets)
+          7) Targeted refactor suggestions (small, mechanical)
+          8) Style/consistency nits (brief)
 
-Rules:
-- Use file tools to read files (absolute paths only). If a path is missing, say so.
-- Cite file paths and line numbers. For full-file remarks, cite file line numbers; for changes, cite diff hunks.
-- Skip generated/lock/binary files with a one-liner.
-- If context is insufficient, state exactly what you need.
+          Rules:
+          - Use file tools to read files (absolute paths only). If a path is missing, say so.
+          - Cite file paths and line numbers. For full-file remarks, cite file line numbers; for changes, cite diff hunks.
+          - Skip generated/lock/binary files with a one-liner.
+          - If context is insufficient, state exactly what you need.
 
-PROMPT
+          PROMPT
 
           if [ "${{ steps.policy.outputs.found }}" = "true" ]; then
             echo -e "\n--- BEGIN REVIEW POLICY (${{ steps.policy.outputs.scope }}) ---" >> prompt.md
@@ -173,6 +175,7 @@ PROMPT
           echo -e "\n--- BEGIN ABSOLUTE PATHS ---" >> prompt.md
           cat abs-files.txt >> prompt.md || true
           echo -e "\n--- END ABSOLUTE PATHS ---\n" >> prompt.md
+
           echo -e "\n--- BEGIN DIFF ---" >> prompt.md
           cat diff.patch >> prompt.md
           echo -e "\n--- END DIFF ---" >> prompt.md
@@ -191,6 +194,7 @@ PROMPT
           GEMINI_MODEL: ${{ env.GEMINI_MODEL }}
         shell: bash
         run: |
+          set -euo pipefail
           # Try preferred model, fall back gracefully
           gemini --yolo --model "$GEMINI_MODEL" --prompt "$(cat prompt.md)" > review.md \
             || gemini --yolo --model "gemini-2.0-pro" --prompt "$(cat prompt.md)" > review.md
@@ -206,6 +210,7 @@ PROMPT
         if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork }}
         shell: bash
         run: |
+          set -euo pipefail
           OUT_DIR=".github/review-results"
           OUT_FILE="$OUT_DIR/pr-${{ github.event.pull_request.number }}.md"
           mkdir -p "$OUT_DIR"
