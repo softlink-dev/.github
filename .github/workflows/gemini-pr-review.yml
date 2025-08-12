@@ -165,7 +165,7 @@ Rules:
 PROMPT
 
           if [ "${{ steps.policy.outputs.found }}" = "true" ]; then
-            echo -e "\n--- BEGIN REVIEW POLICY (${ {steps.policy.outputs.scope} }) ---" >> prompt.md
+            echo -e "\n--- BEGIN REVIEW POLICY (${{ steps.policy.outputs.scope }}) ---" >> prompt.md
             cat "${{ steps.policy.outputs.path }}" >> prompt.md
             echo -e "\n--- END REVIEW POLICY ---" >> prompt.md
           fi
