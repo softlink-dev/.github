@@ -1,0 +1,167 @@
+name: Gemini PR Review (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: "Gemini model to use"
+        type: string
+        default: gemini-2.5-pro
+        required: false
+      max_files:
+        description: "Max number of changed files to self-read"
+        type: string
+        default: "25"
+        required: false
+      max_diff_lines:
+        description: "Max unified diff lines to include"
+        type: string
+        default: "4000"
+        required: false
+      exclude_regex:
+        description: "Regex of files/paths to skip"
+        type: string
+        default: '(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|\.lock$|\.min\.(js|css)$|\.map$|\.png$|\.jpe?g$|\.gif$|\.svg$|\.pdf$|\.zip$|\.tar$|\.gz$|\.7z$|\.ico$|\.bmp$'
+        required: false
+    secrets:
+      GEMINI_API_KEY:
+        required: true
+
+jobs:
+  review:
+    name: Review PR with Gemini
+    permissions:
+      contents: read
+      pull-requests: write
+    runs-on: ubuntu-latest
+
+    env:
+      GEMINI_MODEL: ${{ inputs.model }}
+      MAX_FILES: ${{ inputs.max_files }}
+      MAX_DIFF_LINES: ${{ inputs.max_diff_lines }}
+      EXCLUDE_REGEX: ${{ inputs.exclude_regex }}
+
+    steps:
+      - name: Checkout (full history for accurate diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve base/head SHAs
+        id: shas
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            git fetch origin "${{ github.event.repository.default_branch || 'main' }}"
+            BASE="$(git rev-parse "origin/${{ github.event.repository.default_branch || 'main' }}")"
+            HEAD="$(git rev-parse HEAD)"
+          fi
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+          echo "HEAD=$HEAD" >> "$GITHUB_ENV"
+          echo "Base: $BASE"
+          echo "Head: $HEAD"
+
+      - name: Gather changed files (filtered) and absolute paths
+        id: files
+        shell: bash
+        run: |
+          git diff --name-only --diff-filter=ACMRT "$BASE" "$HEAD" \
+            | grep -Eiv "${EXCLUDE_REGEX}" \
+            | head -n "${MAX_FILES}" > files.txt || true
+
+          awk -v PFX="$GITHUB_WORKSPACE/" '{print PFX $0}' files.txt > abs-files.txt
+
+          echo "Changed files (filtered):"
+          cat files.txt || true
+
+          {
+            echo "### Files Gemini will self-read"
+            if [ -s files.txt ]; then cat files.txt; else echo "_None_"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate unified diff (unified=0) with guardrail
+        shell: bash
+        run: |
+          git diff --unified=0 --no-color "$BASE" "$HEAD" > diff.patch
+          LINES=$(wc -l < diff.patch || echo 0)
+          if [ "$LINES" -gt "${MAX_DIFF_LINES}" ]; then
+            echo "::warning::Diff has $LINES lines; truncating to ${MAX_DIFF_LINES}."
+            head -n "${MAX_DIFF_LINES}" diff.patch > diff.truncated.patch && mv diff.truncated.patch diff.patch
+          fi
+          echo "### Diff lines included: $(wc -l < diff.patch)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build prompt (instruct Gemini to self-read files)
+        shell: bash
+        run: |
+          cat > prompt.md << 'PROMPT'
+You are an exacting senior code reviewer.
+
+Context:
+- You are running on a GitHub Actions runner with the repository checked out.
+- Use your file tools to open files by **absolute path** from the list below for full context.
+- Prioritize regions touched by the diff when inspecting large files.
+
+Deliverables (in this order):
+1) High-risk bugs/security issues
+2) Correctness & logic errors
+3) API/contract or backward-compat breaks
+4) Performance & resource issues
+5) Concurrency/thread-safety problems
+6) Minimal tests to add (tiny code snippets)
+7) Targeted refactor suggestions (small, mechanical)
+8) Style/consistency nits (brief)
+
+Rules:
+- Use file tools to read files (absolute paths only). If a path is missing, say so.
+- Cite file paths and line numbers. For full-file references, cite the file line numbers; for changes, cite diff hunks.
+- Skip generated/lock/binary files with a one-liner.
+- If context is insufficient, state exactly what you need.
+
+--- BEGIN ABSOLUTE PATHS ---
+PROMPT
+          cat abs-files.txt >> prompt.md
+          printf "\n--- END ABSOLUTE PATHS ---\n\n--- BEGIN DIFF ---\n" >> prompt.md
+          cat diff.patch >> prompt.md
+          printf "\n--- END DIFF ---\n" >> prompt.md
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Gemini CLI
+        run: npm install -g @google/gemini-cli
+
+      - name: Run Gemini review (self-reads files)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ env.GEMINI_MODEL }}
+        shell: bash
+        run: |
+          # Try preferred model, fall back gracefully
+          gemini --yolo --model "$GEMINI_MODEL" --prompt "$(cat prompt.md)" > review.md \
+            || gemini --yolo --model "gemini-2.0-pro" --prompt "$(cat prompt.md)" > review.md
+
+          if [ ! -s review.md ]; then
+            echo "Gemini produced no output. Check API key, model access, or rate limits." > review.md
+          fi
+
+          echo "### Gemini Review (first 80 lines)" >> "$GITHUB_STEP_SUMMARY"
+          head -n 80 review.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post PR comment
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('review.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body
+            });
