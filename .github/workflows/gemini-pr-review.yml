@@ -36,7 +36,9 @@ on:
     secrets:
       GEMINI_API_KEY:
         required: true
-
+      PAT_TOKEN:
+        required: true
+        
 jobs:
   debug-secrets:
     runs-on: ubuntu-latest
