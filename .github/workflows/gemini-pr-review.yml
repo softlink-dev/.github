@@ -178,18 +178,16 @@ jobs:
             }
             core.setOutput('items', JSON.stringify(items, null, 2));
 
-      - name: Save manifest
+      - name: Write manifest file
+        shell: bash
+        run: |
+          printf '%s' '${{ steps.manifest.outputs.items }}' > "${RUNNER_TEMP}/manifest.json"
+
+      - name: Upload manifest artifact
         uses: actions/upload-artifact@v4
         with:
           name: review-manifest
-          path: |
-            ${{ runner.temp }}/manifest.json
-        env:
-          # write a copy to a temp path for the artifact
-          DUMP: ${{ steps.manifest.outputs.items }}
-        shell: bash
-        run: |
-          printf '%s' "${DUMP}" > "${RUNNER_TEMP}/manifest.json"
+          path: ${{ runner.temp }}/manifest.json
 
   review:
     name: Review ${{ matrix.item.path }} @ ${{ matrix.item.sha }}
@@ -216,6 +214,16 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Checkout org .github control repo (for default policy)
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          ref: ${{ inputs.control_repo_ref }}
+          path: __org_control
+          fetch-depth: 1
+          token: ${{ secrets.PAT_TOKEN }}
 
       - name: Re-locate review policy (cheap repeat)
         id: policy
@@ -262,7 +270,6 @@ jobs:
           fi
 
           # Get post-change file content (new version at this commit)
-          # Note: for deleted files, this will fail; handle below.
           if [ "${ISBIN}" = "true" ]; then
             : # binary - skip content extraction
           else
@@ -271,7 +278,6 @@ jobs:
 
           # Decide context packing mode
           MODE="diff_only"
-          TRUNCATED="false"
           FILE_LINES="0"
           if [ -f work/file.txt ]; then
             FILE_LINES=$(wc -l < work/file.txt | tr -d ' ')
@@ -306,7 +312,6 @@ jobs:
             }' | sort -n > work/windows.raw || true
 
           if [ ! -s work/windows.raw ]; then
-            # Fallback: no hunks parsed → diff_only
             echo "mode=diff_only" >> $GITHUB_OUTPUT
             exit 0
           fi
@@ -344,18 +349,19 @@ jobs:
 
           # Extract the merged windows from file.txt with banners
           : > work/excerpts.txt
-          LNUM=0
           while read -r s e; do
             echo "--- BEGIN EXCERPT [lines ${s}-${e}] ---" >> work/excerpts.txt
             awk -v S="$s" -v E="$e" 'NR>=S && NR<=E { print }' work/file.txt >> work/excerpts.txt
             echo "--- END EXCERPT ---" >> work/excerpts.txt
           done < work/windows.final
 
-      - name: Install Gemini CLI
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm install -g @google/gemini-cli
+
+      - name: Install Gemini CLI
+        run: npm install -g @google/gemini-cli
 
       - name: Build prompt and call Gemini
         id: ai
@@ -469,31 +475,23 @@ jobs:
           echo "# AI Review Summary for PR #${{ github.event.pull_request.number }}" > compiled/SUMMARY.md
           echo >> compiled/SUMMARY.md
 
-          # Collate by commit directory names (review-<sha> artifacts contain per-file md's)
-          find all-reviews -type f -name '*.md' | sed 's#^all-reviews/##' | awk -F/ '{print $1"/"$2}' | sort -u > commits.txt || true
-
-          if [ ! -s commits.txt ]; then
-            echo "No review artifacts found." >> compiled/SUMMARY.md
+          # Build PR-level report ordered by commit
+          if ls all-reviews >/dev/null 2>&1; then
+            for d in $(ls -1 all-reviews | grep '^review-' | sed 's/^review-//' | sort); do
+              echo "- Commit ${d}" >> compiled/SUMMARY.md
+              mkdir -p "compiled/${d}"
+              echo "# Commit ${d}" > "compiled/${d}/index.md"
+              if ls "all-reviews/review-${d}"/*.md >/dev/null 2>&1; then
+                for f in $(ls -1 "all-reviews/review-${d}"/*.md | sort); do
+                  cat "$f" >> "compiled/${d}/index.md"
+                  echo >> "compiled/${d}/index.md"
+                done
+              fi
+            done
           else
-            while read -r pair; do
-              # pair looks like: review-<sha>/<file>
-              sha="$(echo "$pair" | cut -d/ -f1 | sed 's/^review-//')"
-              [ -z "$sha" ] && continue
-              mkdir -p "compiled/${sha}"
-              echo "# Commit ${sha}" > "compiled/${sha}/index.md"
-              # Gather all files for this commit
-              find "all-reviews/review-${sha}" -type f -name '*.md' | sort > "compiled/${sha}/list.txt"
-              COUNT=$(wc -l < "compiled/${sha}/list.txt" | tr -d ' ')
-              echo "- Reviewed files: ${COUNT}" >> compiled/SUMMARY.md
-              echo "  - Commit ${sha}" >> compiled/SUMMARY.md
-              while read -r f; do
-                cat "$f" >> "compiled/${sha}/index.md"
-                echo >> "compiled/${sha}/index.md"
-              done < "compiled/${sha}/list.txt"
-            done < <(ls -1 all-reviews | grep '^review-' | sed 's/^review-//' | sort | sed 's#^#review-#')
+            echo "No review artifacts found." >> compiled/SUMMARY.md
           fi
 
-          # Build a single PR-level report (ordered by commit)
           {
             echo "# PR-level Review Report"
             echo
