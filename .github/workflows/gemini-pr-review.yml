@@ -1,4 +1,4 @@
-name: Gemini PR Review
+name: Gemini PR Review (per-commit, per-file)
 
 on:
   workflow_call:
@@ -7,79 +7,81 @@ on:
         description: "Gemini model to use"
         type: string
         default: gemini-2.5-pro
-        required: false
       max_files:
-        description: "Max number of changed files to self-read"
+        description: "Max files per commit to review"
         type: string
         default: "25"
-        required: false
       max_diff_lines:
-        description: "Max unified diff lines to include"
+        description: "Max unified diff lines to include (per file)"
         type: string
         default: "4000"
-        required: false
       exclude_regex:
         description: "Regex of files/paths to skip"
         type: string
         default: '(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|\.lock$|\.min\.(js|css)$|\.map$|\.png$|\.jpe?g$|\.gif$|\.svg$|\.pdf$|\.zip$|\.tar$|\.gz$|\.7z$|\.ico$|\.bmp$'
-        required: false
       policy_path:
         description: "Path to repo/org review policy file"
         type: string
-        default: '.github/review/REVIEW_POLICY.md'   # <-- quote the default path
-        required: false
+        default: '.github/review/REVIEW_POLICY.md'
       control_repo_ref:
         description: "Branch/ref of the org control repo (.github)"
         type: string
         default: main
-        required: false
+
+      # New tunables (safe defaults)
+      full_file_threshold_lines:
+        description: "Max lines to include full post-change file"
+        type: string
+        default: "1200"
+      window_before:
+        description: "Lines before each hunk in windowed mode"
+        type: string
+        default: "60"
+      window_after:
+        description: "Lines after each hunk in windowed mode"
+        type: string
+        default: "40"
+      merge_gap_tolerance:
+        description: "Merge windows if gap ≤ this many lines"
+        type: string
+        default: "10"
+      max_windowed_lines:
+        description: "Max total excerpt lines across windows"
+        type: string
+        default: "1200"
+      max_commits:
+        description: "Safety cap on commits per PR to process"
+        type: string
+        default: "100"
+      post_mode:
+        description: "Where to publish results: artifact_only | commit | both"
+        type: string
+        default: "artifact_only"
+
     secrets:
       GEMINI_API_KEY:
         required: true
       PAT_TOKEN:
         required: true
-        
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
-  debug-secrets:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check if GEMINI_API_KEY is set
-        run: |
-          if [ -z "${{ secrets.GEMINI_API_KEY }}" ]; then
-            echo "GEMINI_API_KEY is NOT set or is empty!"
-            exit 1
-          else
-            echo "GEMINI_API_KEY is set and non-empty (length: ${#GEMINI_API_KEY})"
-          fi
-      - name: Check if PAT_TOKEN is set
-        run: |
-          if [ -z "${{ secrets.PAT_TOKEN }}" ]; then
-            echo "PAT_TOKEN is NOT set or is empty!"
-            exit 1
-          else
-            echo "PAT_TOKEN is set and non-empty (length: ${#PAT_TOKEN})"
-          fi
-          
-          
-  review:
-    # Avoid re-running on our own bot commits (prevents loops)
-    if: ${{ github.actor != 'github-actions[bot]' }}
-    name: Review PR with Gemini
+  prepare:
+    name: Build review manifest
     runs-on: ubuntu-latest
     permissions:
-      contents: write    # we commit review file
+      contents: read
       pull-requests: read
-
-    env:
-      GEMINI_MODEL: ${{ inputs.model }}
-      MAX_FILES: ${{ inputs.max_files }}
-      MAX_DIFF_LINES: ${{ inputs.max_diff_lines }}
-      EXCLUDE_REGEX: ${{ inputs.exclude_regex }}
-      POLICY_PATH: ${{ inputs.policy_path }}
-      CONTROL_REF: ${{ inputs.control_repo_ref }}
-
+    outputs:
+      items: ${{ steps.manifest.outputs.items }}
+      policy_found: ${{ steps.policy.outputs.found }}
+      policy_scope: ${{ steps.policy.outputs.scope }}
+      policy_path_resolved: ${{ steps.policy.outputs.path }}
     steps:
-      - name: Checkout PR head (so we can push to the branch)
+      - name: Checkout PR head
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -90,7 +92,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/.github
-          ref: ${{ env.CONTROL_REF }}
+          ref: ${{ inputs.control_repo_ref }}
           path: __org_control
           fetch-depth: 1
           token: ${{ secrets.PAT_TOKEN }}
@@ -101,152 +103,441 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-            HEAD="${{ github.event.pull_request.head.sha }}"
+            echo "base=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
+            echo "head=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
           else
             git fetch origin "${{ github.event.repository.default_branch || 'main' }}"
-            BASE="$(git rev-parse "origin/${{ github.event.repository.default_branch || 'main' }}")"
-            HEAD="$(git rev-parse HEAD)"
+            echo "base=$(git rev-parse "origin/${{ github.event.repository.default_branch || 'main' }}")" >> $GITHUB_OUTPUT
+            echo "head=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
           fi
-          echo "BASE=$BASE" >> "$GITHUB_ENV"
-          echo "HEAD=$HEAD" >> "$GITHUB_ENV"
-          echo "Base: $BASE"
-          echo "Head: $HEAD"
-
-      - name: Gather changed files (filtered) and absolute paths
-        id: files
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --name-only --diff-filter=ACMRT "$BASE" "$HEAD" \
-            | grep -Eiv "${EXCLUDE_REGEX}" \
-            | head -n "${MAX_FILES}" > files.txt || true
-
-          awk -v PFX="$GITHUB_WORKSPACE/" '{print PFX $0}' files.txt > abs-files.txt
-
-          echo "Changed files (filtered):"
-          cat files.txt || true
-
-          {
-            echo "### Files Gemini will self-read"
-            if [ -s files.txt ]; then cat files.txt; else echo "_None_"; fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Generate unified diff (unified=0) with guardrail
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --unified=0 --no-color "$BASE" "$HEAD" > diff.patch
-          LINES=$(wc -l < diff.patch || echo 0)
-          if [ "$LINES" -gt "${MAX_DIFF_LINES}" ]; then
-            echo "::warning::Diff has $LINES lines; truncating to ${MAX_DIFF_LINES}."
-            head -n "${MAX_DIFF_LINES}" diff.patch > diff.truncated.patch && mv diff.truncated.patch diff.patch
-          fi
-          echo "### Diff lines included: $(wc -l < diff.patch)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Locate review policy (repo override or org default)
         id: policy
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f "$POLICY_PATH" ]; then
-            echo "path=$POLICY_PATH" >> "$GITHUB_OUTPUT"
+          if [ -f "${{ inputs.policy_path }}" ]; then
+            echo "path=${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
             echo "scope=repo" >> "$GITHUB_OUTPUT"
             echo "found=true" >> "$GITHUB_OUTPUT"
-          elif [ -f "__org_control/$POLICY_PATH" ]; then
-            echo "path=__org_control/$POLICY_PATH" >> "$GITHUB_OUTPUT"
+          elif [ -f "__org_control/${{ inputs.policy_path }}" ]; then
+            echo "path=__org_control/${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
             echo "scope=org" >> "$GITHUB_OUTPUT"
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build prompt (include policy + self-read paths + diff)
+      - name: Generate manifest (commits → files)
+        id: manifest
+        uses: actions/github-script@v7
+        env:
+          EXCLUDE_REGEX: ${{ inputs.exclude_regex }}
+          MAX_FILES: ${{ inputs.max_files }}
+          MAX_COMMITS: ${{ inputs.max_commits }}
+        with:
+          script: |
+            const exclude = new RegExp(process.env.EXCLUDE_REGEX || '');
+            const perCommitCap = parseInt(process.env.MAX_FILES || '25', 10);
+            const maxCommits = parseInt(process.env.MAX_COMMITS || '100', 10);
+
+            const {owner, repo, number} = context.issue;
+            if (!number) {
+              core.setFailed('This workflow must run on a PR (pull_request event or called with PR context).');
+              return;
+            }
+
+            // Commits in PR (base→head)
+            let commits = await github.paginate(github.rest.pulls.listCommits, {owner, repo, pull_number: number});
+            if (commits.length > maxCommits) commits = commits.slice(0, maxCommits);
+
+            const items = [];
+            for (const c of commits) {
+              const sha = c.sha;
+              const commit = await github.rest.repos.getCommit({owner, repo, ref: sha});
+              let count = 0;
+              for (const f of (commit.data.files || [])) {
+                const path = f.filename;
+                if (exclude.test(path)) continue;
+                if (!['added','modified','renamed','changed'].includes(f.status)) continue;
+                const isBinary = (f.patch == null); // GitHub omits 'patch' for binary
+                const item = {
+                  sha,
+                  path,
+                  status: f.status,
+                  is_binary: isBinary,
+                  renamed_from: f.previous_filename || null,
+                  additions: f.additions || 0,
+                  deletions: f.deletions || 0,
+                  patch: f.patch || null
+                };
+                items.push(item);
+                count++;
+                if (count >= perCommitCap) break;
+              }
+            }
+            core.setOutput('items', JSON.stringify(items, null, 2));
+
+      - name: Save manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-manifest
+          path: |
+            ${{ runner.temp }}/manifest.json
+        env:
+          # write a copy to a temp path for the artifact
+          DUMP: ${{ steps.manifest.outputs.items }}
+        shell: bash
+        run: |
+          printf '%s' "${DUMP}" > "${RUNNER_TEMP}/manifest.json"
+
+  review:
+    name: Review ${{ matrix.item.path }} @ ${{ matrix.item.sha }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    strategy:
+      max-parallel: 4
+      fail-fast: false
+      matrix:
+        item: ${{ fromJson(needs.prepare.outputs.items || '[]') }}
+    env:
+      GEMINI_MODEL: ${{ inputs.model }}
+      MAX_DIFF_LINES: ${{ inputs.max_diff_lines }}
+      FULL_FILE_THRESHOLD_LINES: ${{ inputs.full_file_threshold_lines }}
+      WINDOW_BEFORE: ${{ inputs.window_before }}
+      WINDOW_AFTER: ${{ inputs.window_after }}
+      MERGE_GAP_TOLERANCE: ${{ inputs.merge_gap_tolerance }}
+      MAX_WINDOWED_LINES: ${{ inputs.max_windowed_lines }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Re-locate review policy (cheap repeat)
+        id: policy
         shell: bash
         run: |
           set -euo pipefail
-          cat > prompt.md << 'PROMPT'
-          You are an exacting senior C# code reviewer.
-
-          If a review policy is provided below, follow it strictly. Then review the PR using:
-            1) Self-reading of the listed absolute file paths for full context (post-change).
-            2) The unified diff to focus on what changed.
-
-          Deliverables (prioritized):
-          1) High-risk bugs/security issues
-          2) Correctness & logic errors
-          3) API/contract or backward-compat breaks
-          4) Performance & resource issues
-          5) Concurrency/thread-safety problems
-          6) Minimal tests to add (tiny code snippets)
-          7) Targeted refactor suggestions (small, mechanical)
-          8) Style/consistency nits (brief)
-
-          Rules:
-          - Use file tools to read files (absolute paths only). If a path is missing, say so.
-          - Cite file paths and line numbers. For full-file remarks, cite file line numbers; for changes, cite diff hunks.
-          - Skip generated/lock/binary files with a one-liner.
-          - If context is insufficient, state exactly what you need.
-
-          PROMPT
-
-          if [ "${{ steps.policy.outputs.found }}" = "true" ]; then
-            echo -e "\n--- BEGIN REVIEW POLICY (${{ steps.policy.outputs.scope }}) ---" >> prompt.md
-            cat "${{ steps.policy.outputs.path }}" >> prompt.md
-            echo -e "\n--- END REVIEW POLICY ---" >> prompt.md
+          if [ -f "${{ inputs.policy_path }}" ]; then
+            echo "path=${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
+            echo "scope=repo" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          elif [ -f "__org_control/${{ inputs.policy_path }}" ]; then
+            echo "path=__org_control/${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
+            echo "scope=org" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-          echo -e "\n--- BEGIN ABSOLUTE PATHS ---" >> prompt.md
-          cat abs-files.txt >> prompt.md || true
-          echo -e "\n--- END ABSOLUTE PATHS ---\n" >> prompt.md
+      - name: Prepare per-file inputs (diff + post-change content)
+        id: context
+        shell: bash
+        env:
+          ITEM_JSON: ${{ toJson(matrix.item) }}
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          printf '%s\n' "${ITEM_JSON}" > work/item.json
 
-          echo -e "\n--- BEGIN DIFF ---" >> prompt.md
-          cat diff.patch >> prompt.md
-          echo -e "\n--- END DIFF ---" >> prompt.md
+          # Extract fields
+          SHA="$(jq -r '.sha' work/item.json)"
+          PATHNEW="$(jq -r '.path' work/item.json)"
+          STATUS="$(jq -r '.status' work/item.json)"
+          ISBIN="$(jq -r '.is_binary' work/item.json)"
+          jq -r '.patch // empty' work/item.json > work/patch.diff || true
 
-      - name: Setup Node.js
+          # If no patch (binary or API omitted), try reconstructing a per-file unified diff (unified=0)
+          if [ ! -s work/patch.diff ] && [ "${ISBIN}" != "true" ]; then
+            git show --no-color --unified=0 "${SHA}" -- "${PATHNEW}" > work/patch.diff || true
+          fi
+
+          # Truncate diff to MAX_DIFF_LINES
+          if [ -s work/patch.diff ]; then
+            head -n "${MAX_DIFF_LINES}" work/patch.diff > work/patch.trim && mv work/patch.trim work/patch.diff
+          fi
+
+          # Get post-change file content (new version at this commit)
+          # Note: for deleted files, this will fail; handle below.
+          if [ "${ISBIN}" = "true" ]; then
+            : # binary - skip content extraction
+          else
+            git show "${SHA}:${PATHNEW}" > work/file.txt 2>/dev/null || true
+          fi
+
+          # Decide context packing mode
+          MODE="diff_only"
+          TRUNCATED="false"
+          FILE_LINES="0"
+          if [ -f work/file.txt ]; then
+            FILE_LINES=$(wc -l < work/file.txt | tr -d ' ')
+            if [ "$FILE_LINES" -le "${FULL_FILE_THRESHOLD_LINES}" ]; then
+              MODE="full"
+            else
+              MODE="windowed"
+            fi
+          fi
+
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+          echo "path=${PATHNEW}" >> $GITHUB_OUTPUT
+          echo "status=${STATUS}" >> $GITHUB_OUTPUT
+          echo "mode=${MODE}" >> $GITHUB_OUTPUT
+          echo "file_lines=${FILE_LINES}" >> $GITHUB_OUTPUT
+
+      - name: Build excerpts for windowed mode (merge overlapping ranges)
+        if: steps.context.outputs.mode == 'windowed'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Parse +c,d from @@ -a,b +c,d @@ headers
+          grep -E '^@@ ' work/patch.diff | \
+          awk -v wb="${WINDOW_BEFORE}" -v wa="${WINDOW_AFTER}" '
+            {
+              # header format: @@ -a,b +c,d @@
+              match($0, /\+([0-9]+),?([0-9]*)/, m)
+              c = m[1]; d = (m[2] == "" ? 1 : m[2])
+              start = c - wb; if (start < 1) start = 1
+              end = c + d - 1 + wa
+              print start " " end
+            }' | sort -n > work/windows.raw || true
+
+          if [ ! -s work/windows.raw ]; then
+            # Fallback: no hunks parsed → diff_only
+            echo "mode=diff_only" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Merge windows when gap ≤ MERGE_GAP_TOLERANCE
+          awk -v gap="${MERGE_GAP_TOLERANCE}" '
+            NR==1 { s=$1; e=$2; next }
+            {
+              if ($1 <= e + gap) {
+                if ($2 > e) e=$2
+              } else {
+                print s " " e
+                s=$1; e=$2
+              }
+            }
+            END { if (s!="") print s " " e }
+          ' work/windows.raw > work/windows.merged
+
+          # Cap total excerpt lines
+          TOTAL=0
+          : > work/windows.final
+          while read -r s e; do
+            if [ -z "$s" ] || [ -z "$e" ]; then continue; fi
+            seg=$(( e - s + 1 ))
+            if [ $(( TOTAL + seg )) -gt "${MAX_WINDOWED_LINES}" ]; then
+              remaining=$(( MAX_WINDOWED_LINES - TOTAL ))
+              if [ "$remaining" -le 0 ]; then break; fi
+              e=$(( s + remaining - 1 ))
+              seg=$remaining
+            fi
+            echo "$s $e" >> work/windows.final
+            TOTAL=$(( TOTAL + seg ))
+            if [ "$TOTAL" -ge "${MAX_WINDOWED_LINES}" ]; then break; fi
+          done < work/windows.merged
+
+          # Extract the merged windows from file.txt with banners
+          : > work/excerpts.txt
+          LNUM=0
+          while read -r s e; do
+            echo "--- BEGIN EXCERPT [lines ${s}-${e}] ---" >> work/excerpts.txt
+            awk -v S="$s" -v E="$e" 'NR>=S && NR<=E { print }' work/file.txt >> work/excerpts.txt
+            echo "--- END EXCERPT ---" >> work/excerpts.txt
+          done < work/windows.final
+
+      - name: Install Gemini CLI
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - run: npm install -g @google/gemini-cli
 
-      - name: Install Gemini CLI
-        run: npm install -g @google/gemini-cli
-
-      - name: Run Gemini review (self-reads files)
+      - name: Build prompt and call Gemini
+        id: ai
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ env.GEMINI_MODEL }}
         shell: bash
         run: |
           set -euo pipefail
-          # Try preferred model, fall back gracefully
-          gemini --yolo --model "$GEMINI_MODEL" --prompt "$(cat prompt.md)" > review.md \
-            || gemini --yolo --model "gemini-2.0-pro" --prompt "$(cat prompt.md)" > review.md
+          SHA="${{ steps.context.outputs.sha }}"
+          PATHNEW="${{ steps.context.outputs.path }}"
+          STATUS="${{ steps.context.outputs.status }}"
+          MODE="${{ steps.context.outputs.mode }}"
+          FILE_LINES="${{ steps.context.outputs.file_lines }}"
 
-          if [ ! -s review.md ]; then
-            echo "Gemini produced no output. Check API key, model access, or rate limits." > review.md
+          # Build prompt
+          {
+            echo "You are reviewing exactly ONE file in a PR."
+            echo
+            echo "Repository: ${{ github.repository }}"
+            echo "Commit: ${SHA}"
+            echo "File: ${PATHNEW}"
+            echo "Status: ${STATUS}"
+            echo "Context-Mode: ${MODE}${FILE_LINES:+ (file lines: ${FILE_LINES})}"
+            echo
+            echo "STRICT RULES:"
+            echo "- Review ONLY this file at this commit."
+            echo "- Use ONLY the unified diff below and the provided post-change content (if any)."
+            echo "- If cross-file context is needed, reply: 'Out of scope: requires cross-file context.'"
+            echo "- Be specific with line references and provide actionable, testable suggestions."
+            echo
+            if [ "${{ steps.policy.outputs.found }}" = "true" ]; then
+              echo "--- BEGIN REVIEW POLICY (${{ steps.policy.outputs.scope }}) ---"
+              cat "${{ steps.policy.outputs.path }}"
+              echo "--- END REVIEW POLICY ---"
+              echo
+            fi
+            echo "--- BEGIN DIFF (file-scoped) ---"
+            if [ -s work/patch.diff ]; then
+              cat work/patch.diff
+            else
+              echo "(No diff content available for this file.)"
+            fi
+            echo "--- END DIFF ---"
+            echo
+            if [ "${MODE}" = "full" ] && [ -s work/file.txt ]; then
+              echo "--- BEGIN POST-CHANGE CONTENT (FULL) ---"
+              cat work/file.txt
+              echo "--- END POST-CHANGE CONTENT ---"
+            elif [ "${MODE}" = "windowed" ] && [ -s work/excerpts.txt ]; then
+              echo "--- BEGIN POST-CHANGE EXCERPTS (WINDOWED) ---"
+              cat work/excerpts.txt
+              echo "--- END POST-CHANGE EXCERPTS ---"
+            else
+              echo "(No post-change content included.)"
+            fi
+          } > prompt.md
+
+          # Run Gemini CLI (single call per file)
+          gemini --yolo --model "$GEMINI_MODEL" --prompt "$(cat prompt.md)" > out.body  \
+            || gemini --yolo --model "gemini-2.0-pro" --prompt "$(cat prompt.md)" > out.body
+
+          # Wrap with a per-file header for stable aggregation
+          mkdir -p reviews/"${SHA}"
+          SAFE_PATH="$(printf '%s' "${PATHNEW}" | tr '/\\' '__')"
+          OUT="reviews/${SHA}/${SAFE_PATH}.md"
+          {
+            echo "## ${PATHNEW} @ ${SHA:0:8}"
+            echo
+            echo "**Mode:** ${MODE}  |  **Lines:** ${FILE_LINES:-0}"
+            echo
+            cat out.body
+            echo
+            echo "---"
+          } > "${OUT}"
+
+          echo "out=${OUT}" >> $GITHUB_OUTPUT
+
+      - name: Upload per-file artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-${{ matrix.item.sha }}
+          path: reviews/${{ steps.context.outputs.sha }}/
+
+  summarize:
+    name: Summarize and publish review
+    needs: [prepare, review]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout PR head (for optional commit)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Download all review artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-reviews
+
+      - name: Stitch per-commit and PR-level summaries
+        id: stitch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p compiled
+          echo "# AI Review Summary for PR #${{ github.event.pull_request.number }}" > compiled/SUMMARY.md
+          echo >> compiled/SUMMARY.md
+
+          # Collate by commit directory names (review-<sha> artifacts contain per-file md's)
+          find all-reviews -type f -name '*.md' | sed 's#^all-reviews/##' | awk -F/ '{print $1"/"$2}' | sort -u > commits.txt || true
+
+          if [ ! -s commits.txt ]; then
+            echo "No review artifacts found." >> compiled/SUMMARY.md
+          else
+            while read -r pair; do
+              # pair looks like: review-<sha>/<file>
+              sha="$(echo "$pair" | cut -d/ -f1 | sed 's/^review-//')"
+              [ -z "$sha" ] && continue
+              mkdir -p "compiled/${sha}"
+              echo "# Commit ${sha}" > "compiled/${sha}/index.md"
+              # Gather all files for this commit
+              find "all-reviews/review-${sha}" -type f -name '*.md' | sort > "compiled/${sha}/list.txt"
+              COUNT=$(wc -l < "compiled/${sha}/list.txt" | tr -d ' ')
+              echo "- Reviewed files: ${COUNT}" >> compiled/SUMMARY.md
+              echo "  - Commit ${sha}" >> compiled/SUMMARY.md
+              while read -r f; do
+                cat "$f" >> "compiled/${sha}/index.md"
+                echo >> "compiled/${sha}/index.md"
+              done < "compiled/${sha}/list.txt"
+            done < <(ls -1 all-reviews | grep '^review-' | sed 's/^review-//' | sort | sed 's#^#review-#')
           fi
 
-          echo "### Gemini Review (first 80 lines)" >> "$GITHUB_STEP_SUMMARY"
-          head -n 80 review.md >> "$GITHUB_STEP_SUMMARY"
+          # Build a single PR-level report (ordered by commit)
+          {
+            echo "# PR-level Review Report"
+            echo
+            for d in $(ls -1 compiled | grep -v SUMMARY.md | sort); do
+              if [ -f "compiled/$d/index.md" ]; then
+                echo
+                echo "## Commit ${d}"
+                echo
+                cat "compiled/$d/index.md"
+              fi
+            done
+          } > compiled/PR-REPORT.md
 
-      - name: Commit review result to PR branch
-        if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork }}
+          echo "pr_report=compiled/PR-REPORT.md" >> $GITHUB_OUTPUT
+
+      - name: Upload compiled summary artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-review-compiled
+          path: compiled/
+
+      - name: Commit review results into PR branch (if allowed and requested)
+        if: |
+          github.event_name == 'pull_request' &&
+          !github.event.pull_request.head.repo.fork &&
+          (inputs.post_mode == 'commit' || inputs.post_mode == 'both')
         shell: bash
         run: |
           set -euo pipefail
           OUT_DIR=".github/review-results"
-          OUT_FILE="$OUT_DIR/pr-${{ github.event.pull_request.number }}.md"
           mkdir -p "$OUT_DIR"
-          mv review.md "$OUT_FILE"
+          # Copy compiled reports
+          cp -r compiled/* "$OUT_DIR"/
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$OUT_FILE"
-          git commit -m "chore: add Gemini review for PR #${{ github.event.pull_request.number }} [skip ci]" || echo "No changes to commit"
+          git add "$OUT_DIR"
+          git commit -m "chore: add AI review results for PR #${{ github.event.pull_request.number }} [skip ci]" || echo "No changes to commit"
           git push
 
-      - name: Note if commit was skipped (forked PR)
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
+      - name: Note fork fallback / artifact-only
+        if: |
+          github.event_name == 'pull_request' &&
+          ( github.event.pull_request.head.repo.fork ||
+            inputs.post_mode == 'artifact_only' )
         run: |
-          echo "::notice::PR is from a fork; cannot push review file. The review is available in the job summary."
+          echo "::notice::Results published as workflow artifacts. Commit to branch skipped (fork or artifact_only mode)."
