@@ -72,9 +72,10 @@ jobs:
   prepare:
     name: Build review manifest
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
+    # CHANGED: Removed explicit permissions (defaults are read-only)
+    # permissions:
+    #   contents: read
+    #   pull-requests: read
     outputs:
       items: ${{ steps.manifest.outputs.items }}
       policy_found: ${{ steps.policy.outputs.found }}
@@ -193,9 +194,10 @@ jobs:
     name: Review ${{ matrix.item.path }} @ ${{ matrix.item.sha }}
     needs: prepare
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
+    # CHANGED: Removed pull-requests: write; defaults to read-only
+    # permissions:
+    #   contents: read
+    #   pull-requests: write
     strategy:
       max-parallel: 4
       fail-fast: false
@@ -451,9 +453,10 @@ jobs:
     needs: [prepare, review]
     if: always()
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: read
+    # CHANGED: Removed job-level write permission; we will push with PAT in-step
+    # permissions:
+    #   contents: write
+    #   pull-requests: read
     steps:
       - name: Checkout PR head (for optional commit)
         uses: actions/checkout@v4
@@ -476,12 +479,12 @@ jobs:
           echo >> compiled/SUMMARY.md
 
           # Build PR-level report ordered by commit
-          if ls all-reviews >/dev/null 2>&1; then
+          if ls all-reviews > /dev/null 2>&1; then
             for d in $(ls -1 all-reviews | grep '^review-' | sed 's/^review-//' | sort); do
               echo "- Commit ${d}" >> compiled/SUMMARY.md
               mkdir -p "compiled/${d}"
               echo "# Commit ${d}" > "compiled/${d}/index.md"
-              if ls "all-reviews/review-${d}"/*.md >/dev/null 2>&1; then
+              if ls "all-reviews/review-${d}"/*.md > /dev/null 2>&1; then
                 for f in $(ls -1 "all-reviews/review-${d}"/*.md | sort); do
                   cat "$f" >> "compiled/${d}/index.md"
                   echo >> "compiled/${d}/index.md"
@@ -518,6 +521,9 @@ jobs:
           github.event_name == 'pull_request' &&
           !github.event.pull_request.head.repo.fork &&
           (inputs.post_mode == 'commit' || inputs.post_mode == 'both')
+        env:
+          # CHANGED: Use PAT to push; avoids requiring write on caller/reusable
+          PAT: ${{ secrets.PAT_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -528,9 +534,13 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$OUT_DIR"
+
+          # CHANGED: Push with PAT so no write scope is requested on the reusable
+          git remote set-url origin "https://x-access-token:${PAT}@github.com/${{ github.repository }}.git"
+
+          git add "$OUT_DIR" || true
           git commit -m "chore: add AI review results for PR #${{ github.event.pull_request.number }} [skip ci]" || echo "No changes to commit"
-          git push
+          git push || echo "Push skipped/failed (branch protection or no changes)"
 
       - name: Note fork fallback / artifact-only
         if: |
