@@ -81,93 +81,9 @@ jobs:
             fi
           fi
           
-          # Count relevant files changed (fix newline issue)
+          # Count relevant files changed (FIXED: Complete the grep command)
           files_changed=$(git diff --name-only HEAD~1 HEAD | \
-            grep -E '\.(py|js|ts|jsx|tsx|go|rs|java|cpp|c|h|php|rb|swift|kt|scala|cs)
-
-  review:
-    name: AI Code Review
-    needs: should-review
-    if: needs.should-review.outputs.should_run == 'true'
-    uses: softlink-dev/.github/.github/workflows/gemini-pr-review-v2.yml@main
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      PAT_TOKEN: ${{ secrets.PAT_TOKEN }}  
-    with:
-      # OPTIMIZED: Much more conservative defaults
-      model: gemini-2.5-pro
-      max_files: ${{ github.event.inputs.max_files_override || '10' }}  # Reduced from 25
-      max_diff_lines: "3000"       # Reduced from 4000
-      max_commits: "10"            # Added limit
-      
-      # BATCH PROCESSING: Use the new batch parameters
-      batch_size: "2"              # Process 2 files per batch
-      max_parallel_batches: "2"    # Max 2 batches running at once
-      
-      # PERFORMANCE TUNING
-      full_file_threshold_lines: "800"    # Reduced from 1200
-      window_before: "40"                  # Reduced from 60
-      window_after: "30"                   # Reduced from 40
-      max_windowed_lines: "800"           # Reduced from 1200
-      
-      # OUTPUT: Start with artifact-only to test stability
-      post_mode: "artifact_only"   # Change to "both" once stable
-      
-      # FILE FILTERING: More aggressive exclusion
-      exclude_regex: '(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor|\.next|\.nuxt|public|static)/|\.lock$|\.min\.(js|css)$|\.map$|\.png$|\.jpe?g$|\.gif$|\.svg$|\.pdf$|\.zip$|\.tar$|\.gz$|\.7z$|\.ico$|\.bmp$|\.dll$|\.exe$|\.pdb$|package-lock\.json$|yarn\.lock$|Cargo\.lock$|\.generated\.'
-
-  # Optional: Add a cleanup job for failed runs
-  cleanup:
-    name: Cleanup on failure
-    needs: [should-review, review]
-    if: always() && (failure() || cancelled())
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Cancel related runs
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const runs = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'pr-review.yml',
-              status: 'in_progress'
-            });
-            
-            for (const run of runs.data.workflow_runs) {
-              if (run.id !== context.runId && 
-                  run.head_sha === context.sha) {
-                console.log(`Cancelling run ${run.id}`);
-                await github.rest.actions.cancelWorkflowRun({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  run_id: run.id
-                });
-              }
-            }
-
-      - name: Cleanup artifacts
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: context.runId
-            });
-            
-            for (const artifact of artifacts.data.artifacts) {
-              if (artifact.name.startsWith('review-')) {
-                console.log(`Cleaning up artifact ${artifact.name}`);
-                await github.rest.actions.deleteArtifact({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  artifact_id: artifact.id
-                });
-              }
-            } | \
+            grep -E '\.(py|js|ts|jsx|tsx|go|rs|java|cpp|c|h|php|rb|swift|kt|scala|cs)$' | \
             wc -l | tr -d ' \n' || echo "0")
           
           # Ensure it's a valid number
@@ -218,7 +134,6 @@ jobs:
       # FILE FILTERING: More aggressive exclusion
       exclude_regex: '(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor|\.next|\.nuxt|public|static)/|\.lock$|\.min\.(js|css)$|\.map$|\.png$|\.jpe?g$|\.gif$|\.svg$|\.pdf$|\.zip$|\.tar$|\.gz$|\.7z$|\.ico$|\.bmp$|\.dll$|\.exe$|\.pdb$|package-lock\.json$|yarn\.lock$|Cargo\.lock$|\.generated\.'
 
-  # Optional: Add a cleanup job for failed runs
   cleanup:
     name: Cleanup on failure
     needs: [should-review, review]
