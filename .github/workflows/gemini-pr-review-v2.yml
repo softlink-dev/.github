@@ -640,7 +640,7 @@ jobs:
   summarize:
     name: Summarize and publish review
     needs: [prepare, review]
-    if: always()
+    if: ${{ always() && needs.prepare.result == 'success' }}    
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
