@@ -463,10 +463,14 @@ jobs:
       - name: Process batch of files sequentially
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          BATCH_JSON: ${{ toJson(matrix.batch) }}
         shell: bash
         run: |
           set -euo pipefail
+
+          # Write the batch data to a file to avoid shell escaping issues
+          cat > batch_data.json << 'EOF'
+          ${{ toJson(matrix.batch) }}
+          EOF
 
           ensure_commit_present() {
             # Fetch a specific commit if it isn't present locally
@@ -476,7 +480,10 @@ jobs:
             fi
           }
 
-          echo "$BATCH_JSON" | jq -c '.items[]' | while IFS= read -r item; do
+          echo "Processing batch: $(jq -r '.id' batch_data.json)"
+          echo "Items in batch: $(jq '.items | length' batch_data.json)"
+
+          jq -c '.items[]' batch_data.json | while IFS= read -r item; do
             echo "Processing: $(echo "$item" | jq -r '.path')"
 
             SHA="$(echo "$item" | jq -r '.sha')"
