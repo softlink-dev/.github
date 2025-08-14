@@ -18,9 +18,7 @@ on:
       exclude_regex:
         description: "Regex of files/paths to skip"
         type: string
-        default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|\\.lock$|\\.min\\.(js|css)$|\\.map$|\\.png$|\\.jpe?g$|\\.gif$|\\.svg$|\\.pdf$|\\.zip$|\\.tar$|\\.gz$|\\.7z$|\\.ico$|\\.bmp$|\\.dll$|\\.exe$|\\.pdb$"
-
-          
+        default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|\\.lock$|\\.min\\.(js|css)$|\\.map$|\\.png$|\\.jpe?g$|\\.gif$|\\.svg$|\\.pdf$|\\.zip$|\\.tar$|\\.gz$|\\.7z$|\\.ico$"
       policy_path:
         description: "Path to repo/org review policy file"
         type: string
@@ -168,192 +166,223 @@ jobs:
           echo "::notice::Review warranted: ${files_changed} code files changed"
 
   prepare:
-      name: Build review manifest
-      needs: precheck
-      if: needs.precheck.outputs.should_run == 'true'
-      runs-on: ubuntu-latest
-      timeout-minutes: 10
-      outputs:
-        batches: ${{ steps.batch.outputs.batches }}
-        policy_found: ${{ steps.policy.outputs.found }}
-        policy_scope: ${{ steps.policy.outputs.scope }}
-        policy_path_resolved: ${{ steps.policy.outputs.path }}
-      steps:
-        - name: Checkout PR head
-          uses: actions/checkout@v4
-          with:
-            fetch-depth: 0
-            ref: ${{ github.event.pull_request.head.ref || github.ref }}
-  
-        - name: Checkout org .github control repo (for default policy)
-          continue-on-error: true
-          uses: actions/checkout@v4
-          with:
-            repository: ${{ github.repository_owner }}/.github
-            ref: ${{ inputs.control_repo_ref }}
-            path: __org_control
-            fetch-depth: 1
-            token: ${{ secrets.PAT_TOKEN }}
-  
-        - name: Resolve base/head SHAs with retry
-          id: shas
-          shell: bash
-          run: |
-            set -euo pipefail
-  
-            retry_git() {
-              local cmd="$1"; local retries=3; local delay=5
-              for i in $(seq 1 $retries); do
-                if eval "$cmd"; then return 0; fi
-                echo "Git command failed (attempt $i/$retries), retrying in ${delay}s..."
-                sleep $delay
-              done
-              return 1
+    name: Build review manifest
+    needs: precheck
+    if: needs.precheck.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      batches: ${{ steps.batch.outputs.batches }}
+      policy_found: ${{ steps.policy.outputs.found }}
+      policy_scope: ${{ steps.policy.outputs.scope }}
+      policy_path_resolved: ${{ steps.policy.outputs.path }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Checkout org .github control repo (for default policy)
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          ref: ${{ inputs.control_repo_ref }}
+          path: __org_control
+          fetch-depth: 1
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Resolve base/head SHAs with retry
+        id: shas
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          retry_git() {
+            local cmd="$1"; local retries=3; local delay=5
+            for i in $(seq 1 $retries); do
+              if eval "$cmd"; then return 0; fi
+              echo "Git command failed (attempt $i/$retries), retrying in ${delay}s..."
+              sleep $delay
+            done
+            return 1
+          }
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "base=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
+            echo "head=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
+          else
+            retry_git "git fetch origin '${{ github.event.repository.default_branch || 'main' }}' --depth=1 --no-tags"
+            echo "base=$(git rev-parse 'origin/${{ github.event.repository.default_branch || 'main' }}')" >> $GITHUB_OUTPUT
+            echo "head=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Locate review policy (repo override or org default)
+        id: policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "${{ inputs.policy_path }}" ]; then
+            echo "path=${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
+            echo "scope=repo" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          elif [ -f "__org_control/${{ inputs.policy_path }}" ]; then
+            echo "path=__org_control/${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
+            echo "scope=org" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate manifest with rate limiting
+        id: manifest
+        uses: actions/github-script@v7
+        env:
+          EXCLUDE_REGEX: ${{ inputs.exclude_regex }}
+          MAX_FILES: ${{ inputs.max_files }}
+          MAX_COMMITS: ${{ inputs.max_commits }}
+        with:
+          script: |
+            const exclude = new RegExp(process.env.EXCLUDE_REGEX || '');
+            const perCommitCap = parseInt(process.env.MAX_FILES || '15', 10);
+            const maxCommits = parseInt(process.env.MAX_COMMITS || '20', 10);
+
+            const {owner, repo, number} = context.issue;
+            if (!number) {
+              core.setFailed('This workflow must run on a PR (pull_request event or called with PR context).');
+              return;
             }
-  
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              echo "base=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
-              echo "head=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
-            else
-              retry_git "git fetch origin '${{ github.event.repository.default_branch || 'main' }}' --depth=1 --no-tags"
-              echo "base=$(git rev-parse 'origin/${{ github.event.repository.default_branch || 'main' }}')" >> $GITHUB_OUTPUT
-              echo "head=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-            fi
-  
-        - name: Locate review policy (repo override or org default)
-          id: policy
-          shell: bash
-          run: |
-            set -euo pipefail
-            if [ -f "${{ inputs.policy_path }}" ]; then
-              echo "path=${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
-              echo "scope=repo" >> "$GITHUB_OUTPUT"
-              echo "found=true" >> "$GITHUB_OUTPUT"
-            elif [ -f "__org_control/${{ inputs.policy_path }}" ]; then
-              echo "path=__org_control/${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
-              echo "scope=org" >> "$GITHUB_OUTPUT"
-              echo "found=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "found=false" >> "$GITHUB_OUTPUT"
-            fi
-  
-        - name: Generate manifest with rate limiting
-          id: manifest
-          uses: actions/github-script@v7
-          env:
-            EXCLUDE_REGEX: ${{ inputs.exclude_regex }}
-            MAX_FILES: ${{ inputs.max_files }}
-            MAX_COMMITS: ${{ inputs.max_commits }}
-          with:
-            script: |
-              const exclude = new RegExp(process.env.EXCLUDE_REGEX || '');
-              const perCommitCap = parseInt(process.env.MAX_FILES || '15', 10);
-              const maxCommits = parseInt(process.env.MAX_COMMITS || '20', 10);
-  
-              const {owner, repo, number} = context.issue;
-              if (!number) {
-                core.setFailed('This workflow must run on a PR (pull_request event or called with PR context).');
-                return;
+
+            const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+            let commits; let retries = 3;
+            while (retries > 0) {
+              try {
+                commits = await github.paginate(github.rest.pulls.listCommits, {owner, repo, pull_number: number});
+                break;
+              } catch (error) {
+                retries--; if (retries === 0) throw error;
+                console.log(`API call failed, retrying... (${retries} attempts left)`);
+                await delay(2000);
               }
-  
-              const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-  
-              let commits; let retries = 3;
+            }
+
+            if (commits.length > maxCommits) commits = commits.slice(0, maxCommits);
+
+            const items = [];
+            for (const c of commits) {
+              const sha = c.sha;
+              await delay(100);
+
+              let commit; retries = 3;
               while (retries > 0) {
                 try {
-                  commits = await github.paginate(github.rest.pulls.listCommits, {owner, repo, pull_number: number});
+                  commit = await github.rest.repos.getCommit({owner, repo, ref: sha});
                   break;
                 } catch (error) {
                   retries--; if (retries === 0) throw error;
-                  console.log(`API call failed, retrying... (${retries} attempts left)`);
+                  console.log(`Commit API call failed for ${sha}, retrying...`);
                   await delay(2000);
                 }
               }
-  
-              if (commits.length > maxCommits) commits = commits.slice(0, maxCommits);
-  
-              const items = [];
-              for (const c of commits) {
-                const sha = c.sha;
-                await delay(100);
-  
-                let commit; retries = 3;
-                while (retries > 0) {
-                  try {
-                    commit = await github.rest.repos.getCommit({owner, repo, ref: sha});
-                    break;
-                  } catch (error) {
-                    retries--; if (retries === 0) throw error;
-                    console.log(`Commit API call failed for ${sha}, retrying...`);
-                    await delay(2000);
-                  }
-                }
-  
-                let count = 0;
-                for (const f of (commit.data.files || [])) {
-                  const path = f.filename;
-                  if (exclude.test(path)) continue;
-                  if (!['added','modified','renamed','changed'].includes(f.status)) continue;
-                  const isBinary = (f.patch == null);
-                  const item = {
-                    sha,
-                    path,
-                    status: f.status,
-                    is_binary: isBinary,
-                    renamed_from: f.previous_filename || null,
-                    additions: f.additions || 0,
-                    deletions: f.deletions || 0,
-                    patch: f.patch || null
-                  };
-                  items.push(item);
-                  count++;
-                  if (count >= perCommitCap) break;
-                }
+
+              let count = 0;
+              for (const f of (commit.data.files || [])) {
+                const path = f.filename;
+                if (exclude.test(path)) continue;
+                if (!['added','modified','renamed','changed'].includes(f.status)) continue;
+                const isBinary = (f.patch == null);
+                const item = {
+                  sha,
+                  path,
+                  status: f.status,
+                  is_binary: isBinary,
+                  renamed_from: f.previous_filename || null,
+                  additions: f.additions || 0,
+                  deletions: f.deletions || 0,
+                  patch: f.patch || null
+                };
+                items.push(item);
+                count++;
+                if (count >= perCommitCap) break;
               }
-  
-              core.setOutput('items', JSON.stringify(items, null, 2));
-  
-        - name: Create batches for parallel processing
-          id: batch
-          uses: actions/github-script@v7
-          env:
-            BATCH_SIZE: ${{ inputs.batch_size }}
-            ITEMS_JSON: ${{ toJSON(steps.manifest.outputs.items) }}
-          with:
-            script: |
-              console.log("patch-1");
-              console.log("ITEMS_JSON:", process.env.ITEMS_JSON);
-              console.log("BATCH_SIZE:", process.env.BATCH_SIZE);
-              
-              if (!process.env.ITEMS_JSON || process.env.ITEMS_JSON === 'null') {
-                core.setFailed('ITEMS_JSON is null or empty. Check the previous step output.');
-                return;
-              }
-              
-              const items = JSON.parse(process.env.ITEMS_JSON);
-              const batchSize = parseInt(process.env.BATCH_SIZE || '3', 10);
-              
-              console.log(`Processing ${items.length} items with batch size ${batchSize}`);
-              
-              const batches = [];
-              for (let i = 0; i < items.length; i += batchSize) {
-                const batch = items.slice(i, i + batchSize);
-                batches.push({ id: Math.floor(i / batchSize), items: batch });
-              }
-              
-              console.log(`Created ${batches.length} batches`);
-              core.setOutput('batches', JSON.stringify(batches));
-  
-        - name: Write batches file
-          shell: bash
-          run: |
-            printf '%s' '${{ steps.batch.outputs.batches }}' > "${RUNNER_TEMP}/batches.json"
-  
-        - name: Upload batches artifact
-          uses: actions/upload-artifact@v4
-          with:
-            name: review-batches
-            path: ${{ runner.temp }}/batches.json
+            }
+
+            core.setOutput('items', JSON.stringify(items, null, 2));
+
+      - name: Create batches for parallel processing
+        id: batch
+        uses: actions/github-script@v7
+        env:
+          BATCH_SIZE: ${{ inputs.batch_size }}
+          MAX_PARALLEL_BATCHES: ${{ inputs.max_parallel_batches }}
+          ITEMS_JSON: ${{ toJSON(steps.manifest.outputs.items) }}
+        with:
+          script: |
+            console.log("ITEMS_JSON:", process.env.ITEMS_JSON);
+            console.log("BATCH_SIZE:", process.env.BATCH_SIZE);
+            console.log("MAX_PARALLEL_BATCHES:", process.env.MAX_PARALLEL_BATCHES);
+            
+            if (!process.env.ITEMS_JSON || process.env.ITEMS_JSON === 'null') {
+              core.setFailed('ITEMS_JSON is null or empty. Check the previous step output.');
+              return;
+            }
+            
+            const items = JSON.parse(process.env.ITEMS_JSON);
+            let batchSize = parseInt(process.env.BATCH_SIZE || '3', 10);
+            const maxParallelBatches = parseInt(process.env.MAX_PARALLEL_BATCHES || '2', 10);
+            
+            // GitHub Actions matrix limit is 256 configurations
+            // Use a safe margin to avoid hitting the limit
+            const MAX_MATRIX_CONFIGS = 250;
+            
+            console.log(`Processing ${items.length} items with initial batch size ${batchSize}`);
+            
+            // Calculate how many batches we would create with current batch size
+            let estimatedBatches = Math.ceil(items.length / batchSize);
+            
+            // If we exceed the limit, increase batch size to fit within limits
+            if (estimatedBatches > MAX_MATRIX_CONFIGS) {
+              batchSize = Math.ceil(items.length / MAX_MATRIX_CONFIGS);
+              estimatedBatches = Math.ceil(items.length / batchSize);
+              console.log(`Adjusted batch size to ${batchSize} to stay within matrix limits (${estimatedBatches} batches)`);
+            }
+            
+            // Also respect the max_parallel_batches setting as an upper bound
+            if (estimatedBatches > maxParallelBatches && maxParallelBatches > 0) {
+              batchSize = Math.ceil(items.length / maxParallelBatches);
+              estimatedBatches = Math.ceil(items.length / batchSize);
+              console.log(`Further adjusted batch size to ${batchSize} to respect max_parallel_batches=${maxParallelBatches} (${estimatedBatches} batches)`);
+            }
+            
+            const batches = [];
+            for (let i = 0; i < items.length; i += batchSize) {
+              const batch = items.slice(i, i + batchSize);
+              batches.push({ id: Math.floor(i / batchSize), items: batch });
+            }
+            
+            console.log(`Created ${batches.length} batches with batch size ${batchSize}`);
+            
+            // Final safety check
+            if (batches.length > MAX_MATRIX_CONFIGS) {
+              core.setFailed(`Even after adjustments, batch count (${batches.length}) exceeds GitHub Actions matrix limit (${MAX_MATRIX_CONFIGS}). Consider increasing max file limits or reducing scope.`);
+              return;
+            }
+            
+            core.setOutput('batches', JSON.stringify(batches));
+
+      - name: Write batches file
+        shell: bash
+        run: |
+          printf '%s' '${{ steps.batch.outputs.batches }}' > "${RUNNER_TEMP}/batches.json"
+
+      - name: Upload batches artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-batches
+          path: ${{ runner.temp }}/batches.json
+
   review:
     name: Review Batch ${{ matrix.batch.id }}
     needs: prepare
