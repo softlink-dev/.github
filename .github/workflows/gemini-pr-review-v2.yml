@@ -468,8 +468,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Create batch data using GitHub Actions expressions
-          echo '${{ toJson(matrix.batch.items) }}' > batch_items.json
+          # Use GitHub Actions script to properly handle JSON
+          cat > process_batch.js << 'EOF'
+          const fs = require('fs');
+          
+          // Get the batch data from matrix context
+          const batchData = ${{ toJson(matrix.batch) }};
+          
+          // Write the items array to a file
+          fs.writeFileSync('batch_items.json', JSON.stringify(batchData.items, null, 2));
+          
+          console.log(`Batch ID: ${batchData.id}`);
+          console.log(`Items in batch: ${batchData.items.length}`);
+          EOF
+
+          # Execute the JavaScript to create proper JSON
+          node process_batch.js
 
           ensure_commit_present() {
             # Fetch a specific commit if it isn't present locally
@@ -480,7 +494,6 @@ jobs:
           }
 
           echo "Processing batch: ${BATCH_ID}"
-          echo "Items in batch: $(jq '. | length' batch_items.json)"
 
           # Debug: Show the structure of what we're trying to parse
           echo "First few characters of batch_items.json:"
@@ -493,6 +506,8 @@ jobs:
             cat batch_items.json
             exit 1
           fi
+
+          echo "Items in batch: $(jq '. | length' batch_items.json)"
 
           jq -c '.[]' batch_items.json | while IFS= read -r item; do
             echo "Processing: $(echo "$item" | jq -r '.path')"
