@@ -314,24 +314,28 @@ jobs:
 
             core.setOutput('items', JSON.stringify(items, null, 2));
 
-      - name: Create batches for parallel processing
-        id: batch
-        uses: actions/github-script@v7
-        env:
-          BATCH_SIZE: ${{ inputs.batch_size }}
-        with:
-          script: |
-            # const items = JSON.parse(`${{ toJSON(steps.manifest.outputs.items) }}`);
-            const items = JSON.parse('${{ steps.manifest.outputs.items }}');
-            const batchSize = parseInt(process.env.BATCH_SIZE || '3', 10);
-
-            const batches = [];
-            for (let i = 0; i < items.length; i += batchSize) {
-              const batch = items.slice(i, i + batchSize);
-              batches.push({ id: Math.floor(i / batchSize), items: batch });
-            }
-
-            core.setOutput('batches', JSON.stringify(batches));
+            - name: Create batches for parallel processing
+              id: batch
+              uses: actions/github-script@v7
+              env:
+                BATCH_SIZE: ${{ inputs.batch_size }}
+                ITEMS_JSON: ${{ toJSON(steps.manifest.outputs.items) }}
+              with:
+                script: |
+                  console.log("patch-1");
+                  const items = JSON.parse(process.env.ITEMS_JSON);
+                  const batchSize = parseInt(process.env.BATCH_SIZE || '3', 10);
+                  
+                  console.log(`Processing ${items.length} items with batch size ${batchSize}`);
+                  
+                  const batches = [];
+                  for (let i = 0; i < items.length; i += batchSize) {
+                    const batch = items.slice(i, i + batchSize);
+                    batches.push({ id: Math.floor(i / batchSize), items: batch });
+                  }
+                  
+                  console.log(`Created ${batches.length} batches`);
+                  core.setOutput('batches', JSON.stringify(batches));
 
       - name: Write batches file
         shell: bash
