@@ -463,14 +463,13 @@ jobs:
       - name: Process batch of files sequentially
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          BATCH_ID: ${{ matrix.batch.id }}
         shell: bash
         run: |
           set -euo pipefail
 
-          # Write the batch data to a file to avoid shell escaping issues
-          cat > batch_data.json << 'EOF'
-          ${{ toJson(matrix.batch) }}
-          EOF
+          # Create batch data using GitHub Actions expressions
+          echo '${{ toJson(matrix.batch.items) }}' > batch_items.json
 
           ensure_commit_present() {
             # Fetch a specific commit if it isn't present locally
@@ -480,10 +479,22 @@ jobs:
             fi
           }
 
-          echo "Processing batch: $(jq -r '.id' batch_data.json)"
-          echo "Items in batch: $(jq '.items | length' batch_data.json)"
+          echo "Processing batch: ${BATCH_ID}"
+          echo "Items in batch: $(jq '. | length' batch_items.json)"
 
-          jq -c '.items[]' batch_data.json | while IFS= read -r item; do
+          # Debug: Show the structure of what we're trying to parse
+          echo "First few characters of batch_items.json:"
+          head -c 100 batch_items.json
+          echo ""
+
+          # Validate JSON structure
+          if ! jq . batch_items.json > /dev/null 2>&1; then
+            echo "ERROR: Invalid JSON in batch_items.json"
+            cat batch_items.json
+            exit 1
+          fi
+
+          jq -c '.[]' batch_items.json | while IFS= read -r item; do
             echo "Processing: $(echo "$item" | jq -r '.path')"
 
             SHA="$(echo "$item" | jq -r '.sha')"
