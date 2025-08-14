@@ -321,7 +321,8 @@ jobs:
           BATCH_SIZE: ${{ inputs.batch_size }}
         with:
           script: |
-            const items = JSON.parse(`${{ toJSON(steps.manifest.outputs.items) }}`);
+            # const items = JSON.parse(`${{ toJSON(steps.manifest.outputs.items) }}`);
+            const items = JSON.parse('${{ steps.manifest.outputs.items }}');
             const batchSize = parseInt(process.env.BATCH_SIZE || '3', 10);
 
             const batches = [];
