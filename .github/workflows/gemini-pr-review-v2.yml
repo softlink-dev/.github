@@ -359,31 +359,33 @@ jobs:
     steps:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
-
       - name: Compute summary body
         id: summary
         shell: bash
         env:
           BATCHES_JSON: ${{ needs.prepare.outputs.batches }}
           ITEMS_COUNT: ${{ needs.prepare.outputs.items_count }}
+          REVIEW_STATUS: ${{ needs.review.result }}
         run: |
+          set -Eeuo pipefail
+      
           # Defensive defaults
           BATCHES="${BATCHES_JSON:-[]}"
           COUNT_ITEMS="${ITEMS_COUNT:-0}"
-
+      
           # Derive total files from batches when available
-          DERIVED_TOTAL=$(printf '%s' "$BATCHES" | jq -r 'map(.items|length) | add // 0' 2>/dev/null || echo "0")
-
+          DERIVED_TOTAL="$(printf '%s' "$BATCHES" | jq -r 'map(.items|length) | add // 0' 2>/dev/null || echo 0)"
+      
           # Prefer items_count output, fall back to derived
-          if [ -z "$COUNT_ITEMS" ] || [ "$COUNT_ITEMS" = "0" ]; then
+          if [[ -z "$COUNT_ITEMS" || "$COUNT_ITEMS" == "0" ]]; then
             COUNT="$DERIVED_TOTAL"
           else
             COUNT="$COUNT_ITEMS"
           fi
-
+      
           # Review job status (success/failure/cancelled)
-          STATUS="${{ needs.review.result }}"
-
+          STATUS="${REVIEW_STATUS:-unknown}"
+      
           # Build message
           {
             echo "### AI Code Review — Run Summary"
@@ -391,7 +393,7 @@ jobs:
             echo "- **Files discovered:** ${COUNT}"
             echo "- **Review job status:** ${STATUS}"
             echo
-            if [ "$COUNT" -eq 0 ]; then
+            if [[ "$COUNT" == "0" ]]; then
               echo "ℹ️ No eligible files after filtering. A **batch-level stub file** was created so artifacts are never empty."
             else
               echo "✅ Per-file artifacts were produced. Each item has a markdown file; if AI was unavailable, a **stub** explains why."
@@ -399,11 +401,14 @@ jobs:
             echo
             echo "_This is a triage stub: comment always posted to verify PR-notification plumbing._"
           } > body.md
-
-          # Expose for github-script
-          printf "body<<'EOF'\n" >> "$GITHUB_OUTPUT"
-          cat body.md >> "$GITHUB_OUTPUT"
-          printf "\nEOF\n" >> "$GITHUB_OUTPUT"
+      
+          # Expose for github-script — delimiter must be UNQUOTED
+          {
+            echo 'body<<EOF'
+            cat body.md
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+      
 
       - name: Post PR comment (always)
         uses: actions/github-script@v7
