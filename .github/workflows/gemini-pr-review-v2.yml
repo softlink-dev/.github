@@ -471,15 +471,37 @@ jobs:
           # Use GitHub Actions script to properly handle JSON
           cat > process_batch.js << 'EOF'
           const fs = require('fs');
-          
+
           // Get the batch data from matrix context
           const batchData = ${{ toJson(matrix.batch) }};
-          
+
+          // Safely handle items - could be string, array, or undefined
+          let itemsArray;
+          try {
+            if (typeof batchData.items === 'string') {
+              itemsArray = JSON.parse(batchData.items);
+            } else if (Array.isArray(batchData.items)) {
+              itemsArray = batchData.items;
+            } else {
+              console.error('Invalid items format:', typeof batchData.items);
+              itemsArray = [];
+            }
+          } catch (error) {
+            console.error('Failed to parse items:', error.message);
+            itemsArray = [];
+          }
+
+          // Validate that we have an array
+          if (!Array.isArray(itemsArray)) {
+            console.error('Items is not an array after processing');
+            itemsArray = [];
+          }
+
           // Write the items array to a file
-          fs.writeFileSync('batch_items.json', JSON.stringify(batchData.items, null, 2));
-          
+          fs.writeFileSync('batch_items.json', JSON.stringify(itemsArray, null, 2));
+
           console.log(`Batch ID: ${batchData.id}`);
-          console.log(`Items in batch: ${batchData.items.length}`);
+          console.log(`Items in batch: ${itemsArray.length}`);
           EOF
 
           # Execute the JavaScript to create proper JSON
