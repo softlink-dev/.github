@@ -168,11 +168,23 @@ jobs:
         id: filter
         shell: bash
         run: |
+          set -euo pipefail
           ITEMS='${{ steps.prfiles.outputs.items }}'
           EX="${{ inputs.exclude_regex }}"
-          echo "$ITEMS" | jq --arg re "$EX" '[ .[] | select(.path|test($re) | not) ]' > items.filtered.json
+
+          # Filter + COMPACT (-c) so it's single-line JSON
+          echo "$ITEMS" \
+            | jq -c --arg re "$EX" '[ .[] | select(.path|test($re) | not) ]' \
+            > items.filtered.json
+
           echo "After filter count: $(jq 'length' items.filtered.json)"
-          echo "items=$(cat items.filtered.json)" >> $GITHUB_OUTPUT
+
+          # Safely set output with heredoc (handles any characters)
+          {
+            echo 'items<<JSON'
+            cat items.filtered.json
+            echo 'JSON'
+          } >> "$GITHUB_OUTPUT"
 
       # Count items for summary/comment later
       - name: Count items
