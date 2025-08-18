@@ -25,7 +25,7 @@ jobs:
           merge-multiple: true
 
       - name: Stitch reports
-        uses: ./.github/actions/stitch-reports
+        uses: softlink-dev/.github/.github/actions/stitch-reports@main
 
       - name: Upload compiled summary artifacts
         uses: actions/upload-artifact@v4

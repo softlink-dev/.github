@@ -74,7 +74,7 @@ jobs:
 
       - name: Generate manifest
         id: manifest
-        uses: ./.github/actions/generate-manifest
+        uses: softlink-dev/.github/.github/actions/generate-manifest@main
         with:
           exclude_regex: ${{ inputs.exclude_regex }}
           max_files: ${{ inputs.max_files }}
@@ -82,7 +82,7 @@ jobs:
 
       - name: Create batches
         id: batch
-        uses: ./.github/actions/create-batches
+        uses: softlink-dev/.github/.github/actions/create-batches@main
         with:
           items_json: ${{ steps.manifest.outputs.items }}
           batch_size: ${{ inputs.batch_size }}

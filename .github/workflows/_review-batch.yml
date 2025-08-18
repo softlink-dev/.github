@@ -80,7 +80,7 @@ jobs:
           exit 1
 
       - name: Process batch
-        uses: ./.github/actions/process-batch
+        uses: softlink-dev/.github/.github/actions/process-batch@main
         with:
           batch_json: ${{ inputs.batch_json }}
           model: ${{ inputs.model }}

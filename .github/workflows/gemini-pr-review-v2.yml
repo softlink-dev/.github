@@ -9,7 +9,7 @@ on:
       exclude_regex:
         type: string
         default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|\\.lock$|\\.min\\.(js|css)$|\\.(map|png|jpe?g|gif|svg|pdf|zip|tar|gz|7z|ico)$"
-      policy_path: { type: string, default: ".github/review/REVIEW_POLICY.md" }
+      policy_path: { type: string, default: "softlink-dev/.github/.github/review/REVIEW_POLICY.md" }
       control_repo_ref: { type: string, default: main }
       full_file_threshold_lines: { type: string, default: "1200" }
       window_before: { type: string, default: "60" }
@@ -45,7 +45,7 @@ jobs:
       files_changed: ${{ steps.gate.outputs.files_changed }}
     steps:
       - id: gate
-        uses: ./.github/actions/precheck
+        uses:  softlink-dev/.github/.github/actions/precheck@main
         with:
           force_review: ${{ inputs.force_review }}
           min_lines_threshold: ${{ inputs.min_lines_threshold }}
@@ -54,7 +54,7 @@ jobs:
     name: Build review manifest
     needs: precheck
     if: needs.precheck.outputs.should_run == 'true'
-    uses: ./.github/workflows/_prepare.yml
+    uses:  softlink-dev/.github/.github/workflows/_prepare.yml@main
     with:
       exclude_regex: ${{ inputs.exclude_regex }}
       max_files: ${{ inputs.max_files }}
@@ -73,7 +73,7 @@ jobs:
       fail-fast: false
       matrix:
         batch: ${{ fromJson(needs.prepare.outputs.batches || '[]') }}
-    uses: ./.github/workflows/_review-batch.yml
+    uses: softlink-dev/.github/.github/workflows/_review-batch.yml@main
     with:
       batch_json: ${{ toJson(matrix.batch) }}
       model: ${{ inputs.model }}
@@ -93,7 +93,7 @@ jobs:
     name: Summarize and publish review
     needs: [prepare, review]
     if: ${{ always() && needs.prepare.result == 'success' }}
-    uses: ./.github/workflows/_summarize.yml
+    uses: softlink-dev/.github/.github/workflows/_summarize.yml@main
     with:
       post_mode: ${{ inputs.post_mode }}
     secrets: inherit
