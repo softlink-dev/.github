@@ -200,26 +200,44 @@ jobs:
         id: mkbatches
         shell: bash
         run: |
+          set -euo pipefail
+
           ITEMS='${{ steps.filter.outputs.items }}'
-          MAX='${{ inputs.max_files }}'
-          if [ -z "$ITEMS" ] || [ "$ITEMS" = "[]" ]; then
+          MAX_RAW='${{ inputs.max_files }}'
+
+          # normalize batch size to an integer >= 1
+          if [[ -z "${MAX_RAW}" || "${MAX_RAW}" =~ [^0-9] || "${MAX_RAW}" -lt 1 ]]; then
+            SIZE=10
+          else
+            SIZE="${MAX_RAW}"
+          fi
+
+          if [[ -z "${ITEMS}" || "${ITEMS}" == "[]" ]]; then
             echo '[{"id":"0","items":[]}]' > batches.json
           else
-            jq -n --argjson items "$ITEMS" --argjson size "$MAX" '
+            jq -c -n --argjson items "${ITEMS}" --argjson size "${SIZE}" '
               if ($items|type) != "array" then
                 [{"id":"0","items":[]}]
               else
-                ( if ($items|length) == 0 then
-                    [{"id":"0","items":[]}]
-                  else
-                    [range(0; ($items|length); $size)]
-                    | map({ id: tostring, items: ($items[. : .+$size]) })
-                  end )
+                if ($items|length) == 0 then
+                  [{"id":"0","items":[]}]
+                else
+                  [ range(0; ($items|length); $size) ]
+                  | map({ id: tostring, items: ($items[. : .+$size]) })
+                end
               end
             ' > batches.json
           fi
+
           echo "Batches emitted: $(jq 'length' batches.json)"
-          echo "batches=$(cat batches.json)" >> $GITHUB_OUTPUT
+
+          # SAFE multiline output for GitHub Actions
+          {
+            echo 'batches<<JSON'
+            cat batches.json
+            echo 'JSON'
+          } >> "$GITHUB_OUTPUT"
+
 
       - name: Debug batches
         shell: bash
