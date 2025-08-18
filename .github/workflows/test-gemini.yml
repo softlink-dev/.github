@@ -1,5 +1,8 @@
 name: Test Gemini Modular Review
-
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
 on:
   workflow_dispatch:
     inputs:
@@ -11,7 +14,7 @@ on:
 jobs:
   test-prepare:
     if: ${{ github.event.inputs.run_prepare == 'true' }}
-    uses: ./.github/workflows/_prepare.yml
+    uses: ./.github/workflows/_prepare.yml@main
     with:
       exclude_regex: "(node_modules|dist)/"
       max_files: "5"
@@ -24,7 +27,7 @@ jobs:
 
   test-full:
     if: ${{ github.event.inputs.run_prepare != 'true' }}
-    uses: ./.github/workflows/gemini-pr-review-v2.yml
+    uses: ./.github/workflows/gemini-pr-review-v2.yml@main
     with:
       model: gemini-2.5-pro
       max_files: "5"
