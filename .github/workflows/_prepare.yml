@@ -68,7 +68,7 @@ jobs:
 
       - name: Locate policy
         id: policy
-        uses: ./.github/actions/locate-policy
+        uses: softlink-dev/.github/.github/actions/locate-policy@main
         with:
           policy_path: ${{ inputs.policy_path }}
 
