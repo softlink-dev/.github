@@ -22,6 +22,7 @@ on:
       max_parallel_batches: { type: string, default: "2" }
       force_review: { type: boolean, default: true }
       min_lines_threshold: { type: string, default: "15" }
+      
     secrets:
       GEMINI_API_KEY: { required: true }
       PAT_TOKEN: { required: true }
