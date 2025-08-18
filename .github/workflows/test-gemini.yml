@@ -14,7 +14,7 @@ on:
 jobs:
   test-prepare:
     if: ${{ github.event.inputs.run_prepare == 'true' }}
-    uses: ./.github/workflows/_prepare.yml@main
+    uses: ./.github/workflows/_prepare.yml
     with:
       exclude_regex: "(node_modules|dist)/"
       max_files: "5"
@@ -27,7 +27,7 @@ jobs:
 
   test-full:
     if: ${{ github.event.inputs.run_prepare != 'true' }}
-    uses: ./.github/workflows/gemini-pr-review-v2.yml@main
+    uses: ./.github/workflows/gemini-pr-review-v2.yml
     with:
       model: gemini-2.5-pro
       max_files: "5"
