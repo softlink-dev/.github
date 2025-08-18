@@ -1,0 +1,99 @@
+name: Generate Review Manifest
+description: Collect PR commit files into a manifest, filtering and limiting.
+
+inputs:
+  exclude_regex:
+    description: "Regex of files/paths to skip"
+    required: true
+  max_files:
+    description: "Max files per commit to include"
+    required: true
+  max_commits:
+    description: "Max commits to process"
+    required: true
+
+outputs:
+  items:
+    description: "JSON array of manifest items"
+    value: ${{ steps.manifest.outputs.items }}
+
+runs:
+  using: composite
+  steps:
+    - id: manifest
+      uses: actions/github-script@v7
+      env:
+        EXCLUDE_REGEX: ${{ inputs.exclude_regex }}
+        MAX_FILES: ${{ inputs.max_files }}
+        MAX_COMMITS: ${{ inputs.max_commits }}
+      with:
+        script: |
+          const exclude = new RegExp(process.env.EXCLUDE_REGEX || '');
+          const perCommitCap = parseInt(process.env.MAX_FILES || '15', 10);
+          const maxCommits = parseInt(process.env.MAX_COMMITS || '20', 10);
+
+          const {owner, repo, number} = context.issue;
+          if (!number) {
+            core.setFailed('This workflow must run on a PR context.');
+            return;
+          }
+
+          const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+          let commits; let retries = 3;
+          while (retries > 0) {
+            try {
+              commits = await github.paginate(
+                github.rest.pulls.listCommits,
+                {owner, repo, pull_number: number}
+              );
+              break;
+            } catch (error) {
+              retries--; if (retries === 0) throw error;
+              console.log(`API failed, retrying (${retries} left)...`);
+              await delay(2000);
+            }
+          }
+
+          if (commits.length > maxCommits) commits = commits.slice(0, maxCommits);
+
+          const items = [];
+          for (const c of commits) {
+            const sha = c.sha;
+            await delay(100);
+
+            let commit; retries = 3;
+            while (retries > 0) {
+              try {
+                commit = await github.rest.repos.getCommit({owner, repo, ref: sha});
+                break;
+              } catch (error) {
+                retries--; if (retries === 0) throw error;
+                console.log(`Commit API failed for ${sha}, retrying...`);
+                await delay(2000);
+              }
+            }
+
+            let count = 0;
+            for (const f of (commit.data.files || [])) {
+              const path = f.filename;
+              if (exclude.test(path)) continue;
+              if (!['added','modified','renamed','changed'].includes(f.status)) continue;
+              const isBinary = (f.patch == null);
+
+              items.push({
+                sha,
+                path,
+                status: f.status,
+                is_binary: isBinary,
+                renamed_from: f.previous_filename || null,
+                additions: f.additions || 0,
+                deletions: f.deletions || 0,
+                patch: f.patch || null
+              });
+
+              if (++count >= perCommitCap) break;
+            }
+          }
+
+          core.setOutput('items', JSON.stringify(items, null, 2));

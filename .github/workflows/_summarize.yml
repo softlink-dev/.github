@@ -1,0 +1,77 @@
+name: Summarize & Publish
+
+on:
+  workflow_call:
+    inputs:
+      post_mode: { type: string, required: true } # artifact_only | commit | both
+    secrets:
+      PAT_TOKEN: { required: true }
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head (for optional commit)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Download all review artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-reviews
+          pattern: review-batch-*
+          merge-multiple: true
+
+      - name: Stitch reports
+        uses: ./.github/actions/stitch-reports
+
+      - name: Upload compiled summary artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-review-compiled
+          path: compiled/
+
+      - name: Commit review results into PR branch (if allowed and requested)
+        if: |
+          github.event_name == 'pull_request' &&
+          !github.event.pull_request.head.repo.fork &&
+          (inputs.post_mode == 'commit' || inputs.post_mode == 'both')
+        env:
+          PAT: ${{ secrets.PAT_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT_DIR=".github/review-results"
+          mkdir -p "$OUT_DIR"
+          cp -r compiled/* "$OUT_DIR"/
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          current_branch="${{ github.event.pull_request.head.ref || '' }}"
+          retries=3
+          while [ $retries -gt 0 ]; do
+            git remote set-url origin "https://x-access-token:${PAT}@github.com/${{ github.repository }}.git"
+            if [ -n "$current_branch" ]; then
+              git fetch origin "$current_branch" --depth=1 || true
+              git pull --rebase origin "$current_branch" || true
+            fi
+            git add "$OUT_DIR" || true
+            if git commit -m "chore: add AI review results for PR #${{ github.event.pull_request.number }} [skip ci]"; then
+              if git push; then
+                echo "Committed and pushed review results"
+                break
+              fi
+            fi
+            retries=$((retries - 1))
+            echo "Retrying git ops... ($retries left)"; sleep 5
+          done
+
+      - name: Note fork fallback / artifact-only
+        if: |
+          github.event_name == 'pull_request' &&
+          ( github.event.pull_request.head.repo.fork ||
+            inputs.post_mode == 'artifact_only' )
+        run: echo "::notice::Results published as artifacts. Commit skipped."

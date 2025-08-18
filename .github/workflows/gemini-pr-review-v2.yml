@@ -3,84 +3,29 @@ name: Gemini PR Review (Deadlock-Optimized)
 on:
   workflow_call:
     inputs:
-      model:
-        description: "Gemini model to use"
-        type: string
-        default: gemini-2.5-pro
-      max_files:
-        description: "Max files per commit to review"
-        type: string
-        default: "15"  # Reduced from 25
-      max_diff_lines:
-        description: "Max unified diff lines to include (per file)"
-        type: string
-        default: "4000"
+      model: { type: string, default: gemini-2.5-pro }
+      max_files: { type: string, default: "15" }
+      max_diff_lines: { type: string, default: "4000" }
       exclude_regex:
-        description: "Regex of files/paths to skip"
         type: string
-        default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|\\.lock$|\\.min\\.(js|css)$|\\.(map|png|jpe?g|gif|svg|pdf|zip|tar|gz|7z|ico)$"       
-      policy_path:
-        description: "Path to repo/org review policy file"
-        type: string
-        default: '.github/review/REVIEW_POLICY.md'
-      control_repo_ref:
-        description: "Branch/ref of the org control repo (.github)"
-        type: string
-        default: main
-      full_file_threshold_lines:
-        description: "Max lines to include full post-change file"
-        type: string
-        default: "1200"
-      window_before:
-        description: "Lines before each hunk in windowed mode"
-        type: string
-        default: "60"
-      window_after:
-        description: "Lines after each hunk in windowed mode"
-        type: string
-        default: "40"
-      merge_gap_tolerance:
-        description: "Merge windows if gap ≤ this many lines"
-        type: string
-        default: "10"
-      max_windowed_lines:
-        description: "Max total excerpt lines across windows"
-        type: string
-        default: "1200"
-      max_commits:
-        description: "Safety cap on commits per PR to process"
-        type: string
-        default: "20"  # Reduced from 100
-      post_mode:
-        description: "Where to publish results: artifact_only | commit | both"
-        type: string
-        default: "artifact_only"
-      # NEW: Batch processing parameters
-      batch_size:
-        description: "Number of files to process per batch job"
-        type: string
-        default: "3"
-      max_parallel_batches:
-        description: "Maximum parallel batch jobs"
-        type: string
-        default: "2"  # Much more conservative
-      # Precheck controls (used by the precheck job)
-      force_review:
-        description: "Force review even for draft/small PRs"
-        type: boolean
-        default: true
-      min_lines_threshold:
-        description: "Minimum total changed lines to trigger review (unless forced)"
-        type: string
-        default: "15"
-
+        default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|\\.lock$|\\.min\\.(js|css)$|\\.(map|png|jpe?g|gif|svg|pdf|zip|tar|gz|7z|ico)$"
+      policy_path: { type: string, default: ".github/review/REVIEW_POLICY.md" }
+      control_repo_ref: { type: string, default: main }
+      full_file_threshold_lines: { type: string, default: "1200" }
+      window_before: { type: string, default: "60" }
+      window_after: { type: string, default: "40" }
+      merge_gap_tolerance: { type: string, default: "10" }
+      max_windowed_lines: { type: string, default: "1200" }
+      max_commits: { type: string, default: "20" }
+      post_mode: { type: string, default: "artifact_only" } # artifact_only | commit | both
+      batch_size: { type: string, default: "3" }
+      max_parallel_batches: { type: string, default: "2" }
+      force_review: { type: boolean, default: true }
+      min_lines_threshold: { type: string, default: "15" }
     secrets:
-      GEMINI_API_KEY:
-        required: true
-      PAT_TOKEN:
-        required: true
+      GEMINI_API_KEY: { required: true }
+      PAT_TOKEN: { required: true }
 
-# Permissions needed for artifact deletion/cancel and PR comments/commits
 permissions:
   contents: write
   pull-requests: write
@@ -94,745 +39,60 @@ jobs:
   precheck:
     name: decide if review is needed
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     outputs:
-      should_run: ${{ steps.check.outputs.should_run }}
-      files_changed: ${{ steps.check.outputs.files_changed }}
+      should_run: ${{ steps.gate.outputs.should_run }}
+      files_changed: ${{ steps.gate.outputs.files_changed }}
     steps:
-      - name: Checkout PR base & head
-        uses: actions/checkout@v4
+      - id: gate
+        uses: ./.github/actions/precheck
         with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
-
-      - name: Check if review is warranted
-        id: check
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          force_review="${{ inputs.force_review || 'false' }}"
-          pr_is_draft="${{ github.event.pull_request.draft || 'false' }}"
-          min_threshold="${{ inputs.min_lines_threshold || '15' }}"
-
-          # normalize numeric threshold
-          case "$min_threshold" in (''|*[!0-9]*) min_threshold=15;; esac
-
-          # Draft PR skip (unless forced)
-          if [ "$pr_is_draft" = "true" ] && [ "$force_review" != "true" ]; then
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "files_changed=0"   >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping review for draft PR"
-            exit 0
-          fi
-
-          # Total change lines
-          additions="${{ github.event.pull_request.additions || 0 }}"
-          deletions="${{ github.event.pull_request.deletions || 0 }}"
-          case "$additions" in (''|*[!0-9]*) additions=0;; esac
-          case "$deletions" in (''|*[!0-9]*) deletions=0;; esac
-          total_changes=$(( additions + deletions ))
-
-          if [ "$force_review" != "true" ] && [ "$total_changes" -lt "$min_threshold" ]; then
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "files_changed=0"  >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping review for small PR ($total_changes < $min_threshold)"
-            exit 0
-          fi
-
-          # Resolve base/head SHAs
-          base="${{ github.event.pull_request.base.sha || '' }}"
-          head="${{ github.event.pull_request.head.sha || github.sha }}"
-          if [ -z "$base" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.event.repository.default_branch || 'main' }}"
-            base="$(git rev-parse "origin/${{ github.event.repository.default_branch || 'main' }}")"
-          fi
-
-          # Count code files changed (grep -c; tolerate no-match)
-          files_changed="$(git diff --name-only "$base" "$head" \
-            | grep -E -c '\.(py|js|ts|jsx|tsx|go|rs|java|cpp|c|h|php|rb|swift|kt|scala|cs|csproj|vb|ps1|sh|yml|yaml|json|toml|gradle|m|mm)$' || true)"
-
-          case "$files_changed" in (''|*[!0-9]*) files_changed=0;; esac
-
-          if [ "$files_changed" -eq 0 ]; then
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "files_changed=0"  >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping review - no code files changed"
-            exit 0
-          fi
-
-          echo "should_run=true"                >> "$GITHUB_OUTPUT"
-          echo "files_changed=${files_changed}" >> "$GITHUB_OUTPUT"
-          echo "::notice::Review warranted: ${files_changed} code files changed"
+          force_review: ${{ inputs.force_review }}
+          min_lines_threshold: ${{ inputs.min_lines_threshold }}
 
   prepare:
     name: Build review manifest
     needs: precheck
     if: needs.precheck.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      batches: ${{ steps.batch.outputs.batches }}
-      policy_found: ${{ steps.policy.outputs.found }}
-      policy_scope: ${{ steps.policy.outputs.scope }}
-      policy_path_resolved: ${{ steps.policy.outputs.path }}
-    steps:
-      - name: Checkout PR head
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
-
-      - name: Checkout org .github control repo (for default policy)
-        continue-on-error: true
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/.github
-          ref: ${{ inputs.control_repo_ref }}
-          path: __org_control
-          fetch-depth: 1
-          token: ${{ secrets.PAT_TOKEN }}
-
-      - name: Resolve base/head SHAs with retry
-        id: shas
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          retry_git() {
-            local cmd="$1"; local retries=3; local delay=5
-            for i in $(seq 1 $retries); do
-              if eval "$cmd"; then return 0; fi
-              echo "Git command failed (attempt $i/$retries), retrying in ${delay}s..."
-              sleep $delay
-            done
-            return 1
-          }
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "base=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
-            echo "head=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
-          else
-            retry_git "git fetch origin '${{ github.event.repository.default_branch || 'main' }}' --depth=1 --no-tags"
-            echo "base=$(git rev-parse 'origin/${{ github.event.repository.default_branch || 'main' }}')" >> $GITHUB_OUTPUT
-            echo "head=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Locate review policy (repo override or org default)
-        id: policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f "${{ inputs.policy_path }}" ]; then
-            echo "path=${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
-            echo "scope=repo" >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          elif [ -f "__org_control/${{ inputs.policy_path }}" ]; then
-            echo "path=__org_control/${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
-            echo "scope=org" >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Generate manifest with rate limiting
-        id: manifest
-        uses: actions/github-script@v7
-        env:
-          EXCLUDE_REGEX: ${{ inputs.exclude_regex }}
-          MAX_FILES: ${{ inputs.max_files }}
-          MAX_COMMITS: ${{ inputs.max_commits }}
-        with:
-          script: |
-            const exclude = new RegExp(process.env.EXCLUDE_REGEX || '');
-            const perCommitCap = parseInt(process.env.MAX_FILES || '15', 10);
-            const maxCommits = parseInt(process.env.MAX_COMMITS || '20', 10);
-
-            const {owner, repo, number} = context.issue;
-            if (!number) {
-              core.setFailed('This workflow must run on a PR (pull_request event or called with PR context).');
-              return;
-            }
-
-            const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-            let commits; let retries = 3;
-            while (retries > 0) {
-              try {
-                commits = await github.paginate(github.rest.pulls.listCommits, {owner, repo, pull_number: number});
-                break;
-              } catch (error) {
-                retries--; if (retries === 0) throw error;
-                console.log(`API call failed, retrying... (${retries} attempts left)`);
-                await delay(2000);
-              }
-            }
-
-            if (commits.length > maxCommits) commits = commits.slice(0, maxCommits);
-
-            const items = [];
-            for (const c of commits) {
-              const sha = c.sha;
-              await delay(100);
-
-              let commit; retries = 3;
-              while (retries > 0) {
-                try {
-                  commit = await github.rest.repos.getCommit({owner, repo, ref: sha});
-                  break;
-                } catch (error) {
-                  retries--; if (retries === 0) throw error;
-                  console.log(`Commit API call failed for ${sha}, retrying...`);
-                  await delay(2000);
-                }
-              }
-
-              let count = 0;
-              for (const f of (commit.data.files || [])) {
-                const path = f.filename;
-                if (exclude.test(path)) continue;
-                if (!['added','modified','renamed','changed'].includes(f.status)) continue;
-                const isBinary = (f.patch == null);
-                const item = {
-                  sha,
-                  path,
-                  status: f.status,
-                  is_binary: isBinary,
-                  renamed_from: f.previous_filename || null,
-                  additions: f.additions || 0,
-                  deletions: f.deletions || 0,
-                  patch: f.patch || null
-                };
-                items.push(item);
-                count++;
-                if (count >= perCommitCap) break;
-              }
-            }
-
-            core.setOutput('items', JSON.stringify(items, null, 2));
-
-      - name: Create batches for parallel processing
-        id: batch
-        uses: actions/github-script@v7
-        env:
-          BATCH_SIZE: ${{ inputs.batch_size }}
-          MAX_PARALLEL_BATCHES: ${{ inputs.max_parallel_batches }}
-          ITEMS_JSON: ${{ toJSON(steps.manifest.outputs.items) }}
-        with:
-          script: |
-            console.log("ITEMS_JSON:", process.env.ITEMS_JSON);
-            console.log("BATCH_SIZE:", process.env.BATCH_SIZE);
-            console.log("MAX_PARALLEL_BATCHES:", process.env.MAX_PARALLEL_BATCHES);
-            
-            if (!process.env.ITEMS_JSON || process.env.ITEMS_JSON === 'null') {
-              core.setFailed('ITEMS_JSON is null or empty. Check the previous step output.');
-              return;
-            }
-            
-            const items = JSON.parse(process.env.ITEMS_JSON);
-            let batchSize = parseInt(process.env.BATCH_SIZE || '3', 10);
-            const maxParallelBatches = parseInt(process.env.MAX_PARALLEL_BATCHES || '2', 10);
-            
-            // GitHub Actions matrix limit is 256 configurations
-            // Use a safe margin to avoid hitting the limit
-            const MAX_MATRIX_CONFIGS = 250;
-            
-            console.log(`Processing ${items.length} items with initial batch size ${batchSize}`);
-            
-            // Calculate how many batches we would create with current batch size
-            let estimatedBatches = Math.ceil(items.length / batchSize);
-            
-            // If we exceed the limit, increase batch size to fit within limits
-            if (estimatedBatches > MAX_MATRIX_CONFIGS) {
-              batchSize = Math.ceil(items.length / MAX_MATRIX_CONFIGS);
-              estimatedBatches = Math.ceil(items.length / batchSize);
-              console.log(`Adjusted batch size to ${batchSize} to stay within matrix limits (${estimatedBatches} batches)`);
-            }
-            
-            // Also respect the max_parallel_batches setting as an upper bound
-            if (estimatedBatches > maxParallelBatches && maxParallelBatches > 0) {
-              batchSize = Math.ceil(items.length / maxParallelBatches);
-              estimatedBatches = Math.ceil(items.length / batchSize);
-              console.log(`Further adjusted batch size to ${batchSize} to respect max_parallel_batches=${maxParallelBatches} (${estimatedBatches} batches)`);
-            }
-            
-            const batches = [];
-            for (let i = 0; i < items.length; i += batchSize) {
-              const batch = items.slice(i, i + batchSize);
-              batches.push({ id: Math.floor(i / batchSize), items: batch });
-            }
-            
-            console.log(`Created ${batches.length} batches with batch size ${batchSize}`);
-            
-            // Final safety check
-            if (batches.length > MAX_MATRIX_CONFIGS) {
-              core.setFailed(`Even after adjustments, batch count (${batches.length}) exceeds GitHub Actions matrix limit (${MAX_MATRIX_CONFIGS}). Consider increasing max file limits or reducing scope.`);
-              return;
-            }
-            
-            core.setOutput('batches', JSON.stringify(batches));
-
-      - name: Write batches file
-        shell: bash
-        run: |
-          printf '%s' '${{ steps.batch.outputs.batches }}' > "${RUNNER_TEMP}/batches.json"
-
-      - name: Upload batches artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: review-batches
-          path: ${{ runner.temp }}/batches.json
+    uses: ./.github/workflows/_prepare.yml
+    with:
+      exclude_regex: ${{ inputs.exclude_regex }}
+      max_files: ${{ inputs.max_files }}
+      max_commits: ${{ inputs.max_commits }}
+      policy_path: ${{ inputs.policy_path }}
+      control_repo_ref: ${{ inputs.control_repo_ref }}
+      batch_size: ${{ inputs.batch_size }}
+      max_parallel_batches: ${{ inputs.max_parallel_batches }}
+    secrets: inherit
 
   review:
-    name: Review Batch ${{ matrix.batch.id }}
+    name: Review Batch
     needs: prepare
-    runs-on: ubuntu-latest
-    timeout-minutes: 30  # Added timeout
     strategy:
       max-parallel: ${{ fromJson(inputs.max_parallel_batches) }}
       fail-fast: false
       matrix:
         batch: ${{ fromJson(needs.prepare.outputs.batches || '[]') }}
-    env:
-      GEMINI_MODEL: ${{ inputs.model }}
-      MAX_DIFF_LINES: ${{ inputs.max_diff_lines }}
-      FULL_FILE_THRESHOLD_LINES: ${{ inputs.full_file_threshold_lines }}
-      WINDOW_BEFORE: ${{ inputs.window_before }}
-      WINDOW_AFTER: ${{ inputs.window_after }}
-      MERGE_GAP_TOLERANCE: ${{ inputs.merge_gap_tolerance }}
-      MAX_WINDOWED_LINES: ${{ inputs.max_windowed_lines }}
-    steps:
-      - name: Checkout repo (full)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # ensure any SHA from the PR can be accessed via git show
-
-      - name: Checkout org .github control repo (for default policy)
-        continue-on-error: true
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/.github
-          ref: ${{ inputs.control_repo_ref }}
-          path: __org_control
-          fetch-depth: 1
-          token: ${{ secrets.PAT_TOKEN }}
-
-      - name: Re-locate review policy
-        id: policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f "${{ inputs.policy_path }}" ]; then
-            echo "path=${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
-            echo "scope=repo" >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          elif [ -f "__org_control/${{ inputs.policy_path }}" ]; then
-            echo "path=__org_control/${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
-            echo "scope=org" >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install jq (for JSON processing)
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -y
-          sudo apt-get install -y jq
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Gemini CLI with retry
-        shell: bash
-        run: |
-          set -euo pipefail
-          retries=3
-          while [ $retries -gt 0 ]; do
-            if npm install -g @google/gemini-cli; then
-              break
-            fi
-            retries=$((retries - 1))
-            echo "npm install failed, retrying... ($retries attempts left)"
-            sleep 5
-          done
-
-      - name: Process batch of files sequentially
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          BATCH_ID: ${{ matrix.batch.id }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Use GitHub Actions script to properly handle JSON
-          cat > process_batch.js << 'EOF'
-          const fs = require('fs');
-
-          // Get the batch data from matrix context
-          const batchData = ${{ toJson(matrix.batch) }};
-
-          // Safely handle items - could be string, array, or undefined
-          let itemsArray;
-          try {
-            if (typeof batchData.items === 'string') {
-              itemsArray = JSON.parse(batchData.items);
-            } else if (Array.isArray(batchData.items)) {
-              itemsArray = batchData.items;
-            } else {
-              console.error('Invalid items format:', typeof batchData.items);
-              itemsArray = [];
-            }
-          } catch (error) {
-            console.error('Failed to parse items:', error.message);
-            itemsArray = [];
-          }
-
-          // Validate that we have an array
-          if (!Array.isArray(itemsArray)) {
-            console.error('Items is not an array after processing');
-            itemsArray = [];
-          }
-
-          // Write the items array to a file
-          fs.writeFileSync('batch_items.json', JSON.stringify(itemsArray, null, 2));
-
-          console.log(`Batch ID: ${batchData.id}`);
-          console.log(`Items in batch: ${itemsArray.length}`);
-          EOF
-
-          # Execute the JavaScript to create proper JSON
-          node process_batch.js
-
-          ensure_commit_present() {
-            # Fetch a specific commit if it isn't present locally
-            local sha="$1"
-            if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
-              git fetch --no-tags --depth=1 origin "$sha" || true
-            fi
-          }
-
-          echo "Processing batch: ${BATCH_ID}"
-
-          # Debug: Show the structure of what we're trying to parse
-          echo "First few characters of batch_items.json:"
-          head -c 100 batch_items.json
-          echo ""
-
-          # Validate JSON structure
-          if ! jq . batch_items.json > /dev/null 2>&1; then
-            echo "ERROR: Invalid JSON in batch_items.json"
-            cat batch_items.json
-            exit 1
-          fi
-
-          echo "Items in batch: $(jq '. | length' batch_items.json)"
-
-          jq -c '.[]' batch_items.json | while IFS= read -r item; do
-            echo "Processing: $(echo "$item" | jq -r '.path')"
-
-            SHA="$(echo "$item" | jq -r '.sha')"
-            PATHNEW="$(echo "$item" | jq -r '.path')"
-            STATUS="$(echo "$item" | jq -r '.status')"
-            ISBIN="$(echo "$item" | jq -r '.is_binary')"
-
-            mkdir -p "work/${SHA}"
-            echo "$item" > "work/${SHA}/item.json"
-
-            # Ensure commit is available locally for git show
-            ensure_commit_present "$SHA"
-
-            # Get patch with retry logic (use API-provided patch first)
-            echo "$item" | jq -r '.patch // empty' > "work/${SHA}/patch.diff" || true
-            if [ ! -s "work/${SHA}/patch.diff" ] && [ "${ISBIN}" != "true" ]; then
-              retries=3
-              while [ $retries -gt 0 ]; do
-                if git show --no-color --unified=0 "${SHA}" -- "${PATHNEW}" > "work/${SHA}/patch.diff" 2>/dev/null; then
-                  break
-                fi
-                retries=$((retries - 1))
-                echo "Git show (diff) failed, retrying... ($retries attempts left)"
-                sleep 2
-                ensure_commit_present "$SHA"
-              done
-            fi
-
-            # Truncate diff
-            if [ -s "work/${SHA}/patch.diff" ]; then
-              head -n "${MAX_DIFF_LINES}" "work/${SHA}/patch.diff" > "work/${SHA}/patch.trim" && mv "work/${SHA}/patch.trim" "work/${SHA}/patch.diff"
-            fi
-
-            # Get post-change content with retry
-            if [ "${ISBIN}" != "true" ]; then
-              retries=3
-              while [ $retries -gt 0 ]; do
-                if git show "${SHA}:${PATHNEW}" > "work/${SHA}/file.txt" 2>/dev/null; then
-                  break
-                fi
-                retries=$((retries - 1))
-                echo "Git show (content) failed, retrying... ($retries attempts left)"
-                sleep 2
-                ensure_commit_present "$SHA"
-              done
-            fi
-
-            # Determine mode
-            MODE="diff_only"
-            FILE_LINES="0"
-            if [ -f "work/${SHA}/file.txt" ]; then
-              FILE_LINES=$(wc -l < "work/${SHA}/file.txt" | tr -d ' ')
-              if [ "$FILE_LINES" -le "${FULL_FILE_THRESHOLD_LINES}" ]; then
-                MODE="full"
-              else
-                MODE="windowed"
-              fi
-            fi
-
-            # Build excerpts for windowed mode (merge simple windows)
-            if [ "$MODE" = "windowed" ] && [ -s "work/${SHA}/patch.diff" ]; then
-              # Calculate windows from diff hunks
-              grep -E '^@@ ' "work/${SHA}/patch.diff" | \
-              awk -v wb="${WINDOW_BEFORE}" -v wa="${WINDOW_AFTER}" '{
-                match($0, /\+([0-9]+),?([0-9]*)/, m)
-                c = m[1]; d = (m[2] == "" ? 1 : m[2])
-                start = c - wb; if (start < 1) start = 1
-                end = c + d - 1 + wa
-                print start " " end
-              }' | sort -n > "work/${SHA}/windows.raw" || true
-
-              # Merge overlapping/nearby windows using MERGE_GAP_TOLERANCE
-              if [ -s "work/${SHA}/windows.raw" ]; then
-                : > "work/${SHA}/windows.merged"
-                prevS=0; prevE=0
-                while read -r s e; do
-                  if [ $prevE -eq 0 ]; then
-                    prevS=$s; prevE=$e
-                  else
-                    gap=$(( s - prevE ))
-                    if [ $gap -le ${MERGE_GAP_TOLERANCE} ]; then
-                      if [ $e -gt $prevE ]; then prevE=$e; fi
-                    else
-                      echo "$prevS $prevE" >> "work/${SHA}/windows.merged"
-                      prevS=$s; prevE=$e
-                    fi
-                  fi
-                done < "work/${SHA}/windows.raw"
-                if [ $prevE -ne 0 ]; then echo "$prevS $prevE" >> "work/${SHA}/windows.merged"; fi
-
-                # Emit excerpts with a soft cap on total lines
-                total=0
-                : > "work/${SHA}/excerpts.txt"
-                while read -r s e; do
-                  len=$(( e - s + 1 ))
-                  if [ $(( total + len )) -gt ${MAX_WINDOWED_LINES} ]; then break; fi
-                  echo "--- BEGIN EXCERPT [lines ${s}-${e}] ---" >> "work/${SHA}/excerpts.txt"
-                  awk -v S="$s" -v E="$e" 'NR>=S && NR<=E { print }' "work/${SHA}/file.txt" >> "work/${SHA}/excerpts.txt"
-                  echo "--- END EXCERPT ---" >> "work/${SHA}/excerpts.txt"
-                  total=$(( total + len ))
-                done < "work/${SHA}/windows.merged"
-              fi
-            fi
-
-            # Build prompt
-            {
-              echo "You are reviewing exactly ONE file in a PR."
-              echo
-              echo "Repository: ${{ github.repository }}"
-              echo "Commit: ${SHA}"
-              echo "File: ${PATHNEW}"
-              echo "Status: ${STATUS}"
-              echo "Context-Mode: ${MODE}${FILE_LINES:+ (file lines: ${FILE_LINES})}"
-              echo
-              echo "STRICT RULES:"
-              echo "- Review ONLY this file at this commit."
-              echo "- Use ONLY the unified diff below and the provided post-change content (if any)."
-              echo "- If cross-file context is needed, reply: 'Out of scope: requires cross-file context.'"
-              echo "- Be specific with line references and provide actionable, testable suggestions."
-              echo
-              if [ "${{ steps.policy.outputs.found }}" = "true" ]; then
-                echo "--- BEGIN REVIEW POLICY (${{ steps.policy.outputs.scope }}) ---"
-                cat "${{ steps.policy.outputs.path }}"
-                echo "--- END REVIEW POLICY ---"
-                echo
-              fi
-              echo "--- BEGIN DIFF (file-scoped) ---"
-              if [ -s "work/${SHA}/patch.diff" ]; then
-                cat "work/${SHA}/patch.diff"
-              else
-                echo "(No diff content available for this file.)"
-              fi
-              echo "--- END DIFF ---"
-              echo
-              if [ "${MODE}" = "full" ] && [ -s "work/${SHA}/file.txt" ]; then
-                echo "--- BEGIN POST-CHANGE CONTENT (FULL) ---"
-                cat "work/${SHA}/file.txt"
-                echo "--- END POST-CHANGE CONTENT ---"
-              elif [ "${MODE}" = "windowed" ] && [ -s "work/${SHA}/excerpts.txt" ]; then
-                echo "--- BEGIN POST-CHANGE EXCERPTS (WINDOWED) ---"
-                cat "work/${SHA}/excerpts.txt"
-                echo "--- END POST-CHANGE EXCERPTS ---"
-              else
-                echo "(No post-change content included.)"
-              fi
-            } > "work/${SHA}/prompt.md"
-
-            # Call Gemini with retry and rate limiting
-            retries=3
-            while [ $retries -gt 0 ]; do
-              sleep 2
-              if gemini --yolo --model "$GEMINI_MODEL" --prompt "$(cat "work/${SHA}/prompt.md")" > "work/${SHA}/out.body" 2>/dev/null; then
-                break
-              elif gemini --yolo --model "gemini-2.0-pro" --prompt "$(cat "work/${SHA}/prompt.md")" > "work/${SHA}/out.body" 2>/dev/null; then
-                break
-              fi
-              retries=$((retries - 1))
-              echo "Gemini API call failed, retrying... ($retries attempts left)"
-              sleep 5
-            done
-
-            # Generate output with unique naming
-            mkdir -p "reviews/${SHA}"
-            SAFE_PATH="$(printf '%s' "${PATHNEW}" | tr '/\:*?"<>|' '_')"  # sanitize
-            OUT="reviews/${SHA}/${SAFE_PATH}.md"
-            {
-              echo "## ${PATHNEW} @ ${SHA:0:8}"
-              echo
-              echo "**Mode:** ${MODE}  |  **Lines:** ${FILE_LINES:-0}"
-              echo
-              if [ -s "work/${SHA}/out.body" ]; then
-                cat "work/${SHA}/out.body"
-              else
-                echo "Review failed - no response from AI service."
-              fi
-              echo
-              echo "---"
-            } > "${OUT}"
-
-            echo "Completed: ${PATHNEW}"
-          done
-
-      - name: Upload batch review artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: review-batch-${{ matrix.batch.id }}
-          path: reviews/
-          if-no-files-found: warn
+    uses: ./.github/workflows/_review-batch.yml
+    with:
+      batch_json: ${{ toJson(matrix.batch) }}
+      model: ${{ inputs.model }}
+      max_diff_lines: ${{ inputs.max_diff_lines }}
+      full_file_threshold_lines: ${{ inputs.full_file_threshold_lines }}
+      window_before: ${{ inputs.window_before }}
+      window_after: ${{ inputs.window_after }}
+      merge_gap_tolerance: ${{ inputs.merge_gap_tolerance }}
+      max_windowed_lines: ${{ inputs.max_windowed_lines }}
+      policy_path: ${{ needs.prepare.outputs.policy_path_resolved }}
+      policy_found: ${{ needs.prepare.outputs.policy_found }}
+      policy_scope: ${{ needs.prepare.outputs.policy_scope }}
+      control_repo_ref: ${{ inputs.control_repo_ref }}
+    secrets: inherit
 
   summarize:
     name: Summarize and publish review
     needs: [prepare, review]
-    if: ${{ always() && needs.prepare.result == 'success' }}    
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout PR head (for optional commit)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # full history in case we need it
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
-
-      - name: Download all review artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: all-reviews
-          pattern: review-batch-*
-          merge-multiple: true
-
-      - name: Stitch per-commit and PR-level summaries
-        id: stitch
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p compiled
-          echo "# AI Review Summary for PR #${{ github.event.pull_request.number }}" > compiled/SUMMARY.md
-          echo >> compiled/SUMMARY.md
-
-          if find all-reviews -name "*.md" -type f | head -1 >/dev/null 2>&1; then
-            for d in $(find all-reviews -mindepth 1 -maxdepth 1 -type d | sed 's|.*/||' | sort); do
-              echo "- Commit ${d}" >> compiled/SUMMARY.md
-              mkdir -p "compiled/${d}"
-              echo "# Commit ${d}" > "compiled/${d}/index.md"
-              if ls "all-reviews/${d}"/*.md > /dev/null 2>&1; then
-                for f in $(ls -1 "all-reviews/${d}"/*.md | sort); do
-                  cat "$f" >> "compiled/${d}/index.md"
-                  echo >> "compiled/${d}/index.md"
-                done
-              fi
-            done
-          else
-            echo "No review artifacts found." >> compiled/SUMMARY.md
-          fi
-
-          {
-            echo "# PR-level Review Report"
-            echo
-            for d in $(ls -1 compiled | grep -v SUMMARY.md | sort); do
-              if [ -f "compiled/$d/index.md" ]; then
-                echo
-                echo "## Commit ${d}"
-                echo
-                cat "compiled/$d/index.md"
-              fi
-            done
-          } > compiled/PR-REPORT.md
-
-          echo "pr_report=compiled/PR-REPORT.md" >> $GITHUB_OUTPUT
-
-      - name: Upload compiled summary artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ai-review-compiled
-          path: compiled/
-
-      - name: Commit review results into PR branch (if allowed and requested)
-        if: |
-          github.event_name == 'pull_request' &&
-          !github.event.pull_request.head.repo.fork &&
-          (inputs.post_mode == 'commit' || inputs.post_mode == 'both')
-        env:
-          PAT: ${{ secrets.PAT_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          OUT_DIR=".github/review-results"
-          mkdir -p "$OUT_DIR"
-          cp -r compiled/* "$OUT_DIR"/
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Make push rebase-aware to avoid races
-          current_branch="${{ github.event.pull_request.head.ref || '' }}"
-          retries=3
-          while [ $retries -gt 0 ]; do
-            git remote set-url origin "https://x-access-token:${PAT}@github.com/${{ github.repository }}.git"
-            if [ -n "$current_branch" ]; then
-              git fetch origin "$current_branch" --depth=1 || true
-              git pull --rebase origin "$current_branch" || true
-            fi
-            git add "$OUT_DIR" || true
-            if git commit -m "chore: add AI review results for PR #${{ github.event.pull_request.number }} [skip ci]"; then
-              if git push; then
-                echo "Successfully committed and pushed review results"
-                break
-              fi
-            fi
-            retries=$((retries - 1))
-            echo "Git operation failed, retrying... ($retries attempts left)"
-            sleep 5
-          done
-
-          if [ $retries -eq 0 ]; then
-            echo "::warning::Failed to commit review results after multiple attempts"
-          fi
-
-      - name: Note fork fallback / artifact-only
-        if: |
-          github.event_name == 'pull_request' &&
-          ( github.event.pull_request.head.repo.fork ||
-            inputs.post_mode == 'artifact_only' )
-        run: |
-          echo "::notice::Results published as workflow artifacts. Commit to branch skipped (fork or artifact_only mode)."
+    if: ${{ always() && needs.prepare.result == 'success' }}
+    uses: ./.github/workflows/_summarize.yml
+    with:
+      post_mode: ${{ inputs.post_mode }}
+    secrets: inherit

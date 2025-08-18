@@ -1,0 +1,19 @@
+name: Process Batch
+description: Slice diffs/content, build prompts, call Gemini, write per-file reviews.
+
+inputs:
+  batch_json: { description: "Matrix batch JSON { id, items[] }", required: true }
+  model: { description: "Gemini model name", required: true }
+  max_diff_lines: { required: true }
+  full_file_threshold_lines: { required: true }
+  window_before: { required: true }
+  window_after: { required: true }
+  merge_gap_tolerance: { required: true }
+  max_windowed_lines: { required: true }
+  policy_found: { required: false, default: "false" }
+  policy_scope: { required: false, default: "" }
+  policy_path: { required: false, default: "" }
+
+runs:
+  using: node20
+  main: index.js

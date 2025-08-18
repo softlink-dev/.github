@@ -1,0 +1,46 @@
+name: Locate Review Policy
+description: Resolve repo-level or org-level policy file path.
+
+inputs:
+  policy_path:
+    description: "Relative path to policy file (e.g., .github/review/REVIEW_POLICY.md)"
+    required: true
+
+outputs:
+  found:
+    description: "true if a policy file was found"
+    value: ${{ steps.loc.outputs.found }}
+  scope:
+    description: "repo | org when found"
+    value: ${{ steps.loc.outputs.scope }}
+  path:
+    description: "Resolved path to the policy file"
+    value: ${{ steps.loc.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - id: loc
+      shell: bash
+      run: |
+        set -euo pipefail
+        P="${{ inputs.policy_path }}"
+
+        if [ -f "$P" ]; then
+          echo "path=$P" >> "$GITHUB_OUTPUT"
+          echo "scope=repo" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Using repo policy at $P"
+          exit 0
+        fi
+
+        if [ -f "__org_control/$P" ]; then
+          echo "path=__org_control/$P" >> "$GITHUB_OUTPUT"
+          echo "scope=org" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Using org policy at __org_control/$P"
+          exit 0
+        fi
+
+        echo "found=false" >> "$GITHUB_OUTPUT"
+        echo "::notice::No policy found at '$P' or '__org_control/$P'"

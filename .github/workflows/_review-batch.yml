@@ -1,0 +1,104 @@
+name: Review Batch
+
+on:
+  workflow_call:
+    inputs:
+      batch_json:
+        type: string
+        required: true
+      model:
+        type: string
+        required: true
+      max_diff_lines:
+        type: string
+        required: true
+      full_file_threshold_lines:
+        type: string
+        required: true
+      window_before:
+        type: string
+        required: true
+      window_after:
+        type: string
+        required: true
+      merge_gap_tolerance:
+        type: string
+        required: true
+      max_windowed_lines:
+        type: string
+        required: true
+      policy_path:
+        type: string
+        required: false
+      policy_found:
+        type: string
+        required: false
+      policy_scope:
+        type: string
+        required: false
+      control_repo_ref:
+        type: string
+        required: true
+    secrets:
+      GEMINI_API_KEY:
+        required: true
+      PAT_TOKEN:
+        required: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (full history for git show)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout org .github control repo (optional)
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          ref: ${{ inputs.control_repo_ref }}
+          path: __org_control
+          fetch-depth: 1
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Gemini CLI (retry)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            if npm install -g @google/gemini-cli; then exit 0; fi
+            echo "npm install failed, retrying ($((3-i)) left)"; sleep 5
+          done
+          exit 1
+
+      - name: Process batch
+        uses: ./.github/actions/process-batch
+        with:
+          batch_json: ${{ inputs.batch_json }}
+          model: ${{ inputs.model }}
+          max_diff_lines: ${{ inputs.max_diff_lines }}
+          full_file_threshold_lines: ${{ inputs.full_file_threshold_lines }}
+          window_before: ${{ inputs.window_before }}
+          window_after: ${{ inputs.window_after }}
+          merge_gap_tolerance: ${{ inputs.merge_gap_tolerance }}
+          max_windowed_lines: ${{ inputs.max_windowed_lines }}
+          policy_found: ${{ inputs.policy_found }}
+          policy_scope: ${{ inputs.policy_scope }}
+          policy_path: ${{ inputs.policy_path }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Upload batch review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-batch-${{ fromJson(inputs.batch_json).id }}
+          path: reviews/
+          if-no-files-found: warn

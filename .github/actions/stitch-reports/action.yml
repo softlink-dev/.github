@@ -1,0 +1,43 @@
+name: Stitch Reports
+description: Combine per-file reviews into per-commit and PR-level reports.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p compiled
+        PR_NUM="${{ github.event.pull_request.number || '' }}"
+        echo "# AI Review Summary ${PR_NUM:+for PR #$PR_NUM}" > compiled/SUMMARY.md
+        echo >> compiled/SUMMARY.md
+
+        if find all-reviews -name "*.md" -type f | head -1 >/dev/null 2>&1; then
+          # One subdir per commit SHA under all-reviews/
+          for d in $(find all-reviews -mindepth 1 -maxdepth 1 -type d | sed 's|.*/||' | sort); do
+            echo "- Commit ${d}" >> compiled/SUMMARY.md
+            mkdir -p "compiled/${d}"
+            echo "# Commit ${d}" > "compiled/${d}/index.md"
+            if ls "all-reviews/${d}"/*.md >/dev/null 2>&1; then
+              for f in $(ls -1 "all-reviews/${d}"/*.md | sort); do
+                cat "$f" >> "compiled/${d}/index.md"
+                echo >> "compiled/${d}/index.md"
+              done
+            fi
+          done
+        else
+          echo "No review artifacts found." >> compiled/SUMMARY.md
+        fi
+
+        {
+          echo "# PR-level Review Report"
+          echo
+          for d in $(ls -1 compiled | grep -v SUMMARY.md | sort); do
+            if [ -f "compiled/$d/index.md" ]; then
+              echo
+              echo "## Commit ${d}"
+              echo
+              cat "compiled/$d/index.md"
+            fi
+          done
+        } > compiled/PR-REPORT.md

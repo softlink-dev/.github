@@ -1,0 +1,95 @@
+name: Prepare Review Manifest
+
+on:
+  workflow_call:
+    inputs:
+      exclude_regex:
+        type: string
+        required: true
+      max_files:
+        type: string
+        required: true
+      max_commits:
+        type: string
+        required: true
+      policy_path:
+        type: string
+        required: true
+      control_repo_ref:
+        type: string
+        required: true
+      batch_size:
+        type: string
+        required: true
+      max_parallel_batches:
+        type: string
+        required: true
+    outputs:
+      batches:
+        description: "JSON array of batches"
+        value: ${{ jobs.prepare.outputs.batches }}
+      policy_found:
+        description: "true/false if a policy file was found"
+        value: ${{ jobs.prepare.outputs.policy_found }}
+      policy_scope:
+        description: "repo/org scope of located policy"
+        value: ${{ jobs.prepare.outputs.policy_scope }}
+      policy_path_resolved:
+        description: "resolved path of policy file"
+        value: ${{ jobs.prepare.outputs.policy_path_resolved }}
+    secrets:
+      PAT_TOKEN:
+        required: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      batches: ${{ steps.batch.outputs.batches }}
+      policy_found: ${{ steps.policy.outputs.found }}
+      policy_scope: ${{ steps.policy.outputs.scope }}
+      policy_path_resolved: ${{ steps.policy.outputs.path }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Checkout org .github control repo
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          ref: ${{ inputs.control_repo_ref }}
+          path: __org_control
+          fetch-depth: 1
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Locate policy
+        id: policy
+        uses: ./.github/actions/locate-policy
+        with:
+          policy_path: ${{ inputs.policy_path }}
+
+      - name: Generate manifest
+        id: manifest
+        uses: ./.github/actions/generate-manifest
+        with:
+          exclude_regex: ${{ inputs.exclude_regex }}
+          max_files: ${{ inputs.max_files }}
+          max_commits: ${{ inputs.max_commits }}
+
+      - name: Create batches
+        id: batch
+        uses: ./.github/actions/create-batches
+        with:
+          items_json: ${{ steps.manifest.outputs.items }}
+          batch_size: ${{ inputs.batch_size }}
+          max_parallel_batches: ${{ inputs.max_parallel_batches }}
+
+      - name: Upload batches artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-batches
+          path: ${{ runner.temp }}/batches.json
