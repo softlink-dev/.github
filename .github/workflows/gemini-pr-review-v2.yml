@@ -18,7 +18,7 @@ on:
       exclude_regex:
         description: "Regex of files/paths to skip"
         type: string
-        default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|\\.lock$|\\.min\\.(js|css)$|\\.map$|\\.png$|\\.jpe?g$|\\.gif$|\\.svg$|\\.pdf$|\\.zip$|\\.tar$|\\.gz$|\\.7z$|\\.ico$"
+        default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|\\.lock$|\\.min\\.(js|css)$|\\.(map|png|jpe?g|gif|svg|pdf|zip|tar|gz|7z|ico)$"       
       policy_path:
         description: "Path to repo/org review policy file"
         type: string
