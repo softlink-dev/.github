@@ -92,78 +92,27 @@ concurrency:
 
 jobs:
   precheck:
-    name: decide if review is needed
+    name: decide if review is needed (stub:always proceed)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
       files_changed: ${{ steps.check.outputs.files_changed }}
     steps:
-      - name: Checkout PR base & head
+      - name: Checkout PR head
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
 
-      - name: Check if review is warranted
+      - name: Force enable review & emit debug info
         id: check
         shell: bash
         run: |
           set -euo pipefail
-
-          force_review="${{ inputs.force_review || 'false' }}"
-          pr_is_draft="${{ github.event.pull_request.draft || 'false' }}"
-          min_threshold="${{ inputs.min_lines_threshold || '15' }}"
-
-          # normalize numeric threshold
-          case "$min_threshold" in (''|*[!0-9]*) min_threshold=15;; esac
-
-          # Draft PR skip (unless forced)
-          if [ "$pr_is_draft" = "true" ] && [ "$force_review" != "true" ]; then
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "files_changed=0"   >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping review for draft PR"
-            exit 0
-          fi
-
-          # Total change lines
-          additions="${{ github.event.pull_request.additions || 0 }}"
-          deletions="${{ github.event.pull_request.deletions || 0 }}"
-          case "$additions" in (''|*[!0-9]*) additions=0;; esac
-          case "$deletions" in (''|*[!0-9]*) deletions=0;; esac
-          total_changes=$(( additions + deletions ))
-
-          if [ "$force_review" != "true" ] && [ "$total_changes" -lt "$min_threshold" ]; then
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "files_changed=0"  >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping review for small PR ($total_changes < $min_threshold)"
-            exit 0
-          fi
-
-          # Resolve base/head SHAs
-          base="${{ github.event.pull_request.base.sha || '' }}"
-          head="${{ github.event.pull_request.head.sha || github.sha }}"
-          if [ -z "$base" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.event.repository.default_branch || 'main' }}"
-            base="$(git rev-parse "origin/${{ github.event.repository.default_branch || 'main' }}")"
-          fi
-
-          # Count code files changed (grep -c; tolerate no-match)
-          files_changed="$(git diff --name-only "$base" "$head" \
-            | grep -E -c '\.(py|js|ts|jsx|tsx|go|rs|java|cpp|c|h|php|rb|swift|kt|scala|cs|csproj|vb|ps1|sh|yml|yaml|json|toml|gradle|m|mm)$' || true)"
-
-          case "$files_changed" in (''|*[!0-9]*) files_changed=0;; esac
-
-          if [ "$files_changed" -eq 0 ]; then
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "files_changed=0"  >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping review - no code files changed"
-            exit 0
-          fi
-
-          echo "should_run=true"                >> "$GITHUB_OUTPUT"
-          echo "files_changed=${files_changed}" >> "$GITHUB_OUTPUT"
-          echo "::notice::Review warranted: ${files_changed} code files changed"
+          echo "should_run=true"  >> "$GITHUB_OUTPUT"
+          echo "files_changed=1"  >> "$GITHUB_OUTPUT"
+          echo "::notice::[precheck] Stub enabled → proceeding for review (triage mode)"
 
   prepare:
     name: Build review manifest
