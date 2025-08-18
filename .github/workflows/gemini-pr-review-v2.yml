@@ -1,3 +1,24 @@
+# Error Analysis and Fix
+
+## Problem Identified
+
+The workflow is failing in the "Generate manifest with rate limiting" step due to a **malformed regular expression** in the `exclude_regex` parameter.
+
+### Current Problematic Regex:
+```
+(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor|\.next|\.nuxt|public|static)/ |\.lock$|\.min\.(js|css)$|\.map$|\.png$|\.jpe?g$|\.gif$|\.svg$|\.pdf$ |\.zip$|\.tar$|\.gz$|\.7z$|\.ico$|\.bmp$|\.dll$|\.exe$|\.pdb$ |package-lock\.json$|yarn\.lock$|Cargo\.lock$|\.generated\.
+```
+
+### Issues Found:
+1. **Spaces within the regex pattern** (highlighted with `|` below):
+   - `public|static)/ |\.lock$` - space before `|\.lock$`
+   - `\.pdf$ |\.zip$` - space before `|\.zip$`  
+   - `\.pdb$ |package-lock` - space before `|package-lock`
+2. **Incomplete pattern at the end**: `\.generated\.` (missing closing pattern)
+
+## Fixed Workflow
+
+```yaml
 name: Gemini PR Review (Deadlock-Optimized)
 
 on:
@@ -18,7 +39,7 @@ on:
       exclude_regex:
         description: "Regex of files/paths to skip"
         type: string
-        default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|\\.lock$|\\.min\\.(js|css)$|\\.map$|\\.png$|\\.jpe?g$|\\.gif$|\\.svg$|\\.pdf$|\\.zip$|\\.tar$|\\.gz$|\\.7z$|\\.ico$"
+        default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor|\\.next|\\.nuxt|public|static)/|\\.lock$|\\.min\\.(js|css)$|\\.map$|\\.png$|\\.jpe?g$|\\.gif$|\\.svg$|\\.pdf$|\\.zip$|\\.tar$|\\.gz$|\\.7z$|\\.ico$|\\.bmp$|\\.dll$|\\.exe$|\\.pdb$|package-lock\\.json$|yarn\\.lock$|Cargo\\.lock$|\\.generated\\."
       policy_path:
         description: "Path to repo/org review policy file"
         type: string
@@ -666,151 +687,4 @@ jobs:
               elif gemini --yolo --model "gemini-2.0-pro" --prompt "$(cat "work/${SHA}/prompt.md")" > "work/${SHA}/out.body" 2>/dev/null; then
                 break
               fi
-              retries=$((retries - 1))
-              echo "Gemini API call failed, retrying... ($retries attempts left)"
-              sleep 5
-            done
-
-            # Generate output with unique naming
-            mkdir -p "reviews/${SHA}"
-            SAFE_PATH="$(printf '%s' "${PATHNEW}" | tr '/\:*?"<>|' '_')"  # sanitize
-            OUT="reviews/${SHA}/${SAFE_PATH}.md"
-            {
-              echo "## ${PATHNEW} @ ${SHA:0:8}"
-              echo
-              echo "**Mode:** ${MODE}  |  **Lines:** ${FILE_LINES:-0}"
-              echo
-              if [ -s "work/${SHA}/out.body" ]; then
-                cat "work/${SHA}/out.body"
-              else
-                echo "Review failed - no response from AI service."
-              fi
-              echo
-              echo "---"
-            } > "${OUT}"
-
-            echo "Completed: ${PATHNEW}"
-          done
-
-      - name: Upload batch review artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: review-batch-${{ matrix.batch.id }}
-          path: reviews/
-          if-no-files-found: warn
-
-  summarize:
-    name: Summarize and publish review
-    needs: [prepare, review]
-    if: ${{ always() && needs.prepare.result == 'success' }}    
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout PR head (for optional commit)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # full history in case we need it
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
-
-      - name: Download all review artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: all-reviews
-          pattern: review-batch-*
-          merge-multiple: true
-
-      - name: Stitch per-commit and PR-level summaries
-        id: stitch
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p compiled
-          echo "# AI Review Summary for PR #${{ github.event.pull_request.number }}" > compiled/SUMMARY.md
-          echo >> compiled/SUMMARY.md
-
-          if find all-reviews -name "*.md" -type f | head -1 >/dev/null 2>&1; then
-            for d in $(find all-reviews -mindepth 1 -maxdepth 1 -type d | sed 's|.*/||' | sort); do
-              echo "- Commit ${d}" >> compiled/SUMMARY.md
-              mkdir -p "compiled/${d}"
-              echo "# Commit ${d}" > "compiled/${d}/index.md"
-              if ls "all-reviews/${d}"/*.md > /dev/null 2>&1; then
-                for f in $(ls -1 "all-reviews/${d}"/*.md | sort); do
-                  cat "$f" >> "compiled/${d}/index.md"
-                  echo >> "compiled/${d}/index.md"
-                done
-              fi
-            done
-          else
-            echo "No review artifacts found." >> compiled/SUMMARY.md
-          fi
-
-          {
-            echo "# PR-level Review Report"
-            echo
-            for d in $(ls -1 compiled | grep -v SUMMARY.md | sort); do
-              if [ -f "compiled/$d/index.md" ]; then
-                echo
-                echo "## Commit ${d}"
-                echo
-                cat "compiled/$d/index.md"
-              fi
-            done
-          } > compiled/PR-REPORT.md
-
-          echo "pr_report=compiled/PR-REPORT.md" >> $GITHUB_OUTPUT
-
-      - name: Upload compiled summary artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ai-review-compiled
-          path: compiled/
-
-      - name: Commit review results into PR branch (if allowed and requested)
-        if: |
-          github.event_name == 'pull_request' &&
-          !github.event.pull_request.head.repo.fork &&
-          (inputs.post_mode == 'commit' || inputs.post_mode == 'both')
-        env:
-          PAT: ${{ secrets.PAT_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          OUT_DIR=".github/review-results"
-          mkdir -p "$OUT_DIR"
-          cp -r compiled/* "$OUT_DIR"/
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Make push rebase-aware to avoid races
-          current_branch="${{ github.event.pull_request.head.ref || '' }}"
-          retries=3
-          while [ $retries -gt 0 ]; do
-            git remote set-url origin "https://x-access-token:${PAT}@github.com/${{ github.repository }}.git"
-            if [ -n "$current_branch" ]; then
-              git fetch origin "$current_branch" --depth=1 || true
-              git pull --rebase origin "$current_branch" || true
-            fi
-            git add "$OUT_DIR" || true
-            if git commit -m "chore: add AI review results for PR #${{ github.event.pull_request.number }} [skip ci]"; then
-              if git push; then
-                echo "Successfully committed and pushed review results"
-                break
-              fi
-            fi
-            retries=$((retries - 1))
-            echo "Git operation failed, retrying... ($retries attempts left)"
-            sleep 5
-          done
-
-          if [ $retries -eq 0 ]; then
-            echo "::warning::Failed to commit review results after multiple attempts"
-          fi
-
-      - name: Note fork fallback / artifact-only
-        if: |
-          github.event_name == 'pull_request' &&
-          ( github.event.pull_request.head.repo.fork ||
-            inputs.post_mode == 'artifact_only' )
-        run: |
-          echo "::notice::Results published as workflow artifacts. Commit to branch skipped (fork or artifact_only mode)."
+              retries=$((retries -
