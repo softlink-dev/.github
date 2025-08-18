@@ -117,6 +117,7 @@ jobs:
   prepare:
     name: Prepare Review Batches (stub:always emit at least one batch)
     runs-on: ubuntu-latest
+    needs: precheck
     permissions:
       contents: read
       pull-requests: read
