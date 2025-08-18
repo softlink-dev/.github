@@ -115,16 +115,121 @@ jobs:
           echo "::notice::[precheck] Stub enabled → proceeding for review (triage mode)"
 
   prepare:
-    name: Build review manifest
-    needs: precheck
-    if: needs.precheck.outputs.should_run == 'true'
+    name: Prepare Review Batches (stub:always emit at least one batch)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
-      batches: ${{ steps.batch.outputs.batches }}
-      policy_found: ${{ steps.policy.outputs.found }}
-      policy_scope: ${{ steps.policy.outputs.scope }}
-      policy_path_resolved: ${{ steps.policy.outputs.path }}
+      batches: ${{ steps.mkbatches.outputs.batches }}
+      items_count: ${{ steps.count.outputs.items_count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Use GitHub API to enumerate PR files (more reliable than local git diff)
+      - name: List PR files via API (robust)
+        id: prfiles
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.setFailed('This workflow must run on a pull_request event');
+              return;
+            }
+            const { data } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 3000
+            });
+            const items = data
+              .filter(f => f.status !== 'removed')
+              .map(f => ({
+                path: f.filename,
+                sha: f.sha || pr.head.sha,
+                status: f.status,
+                patch_len: (f.patch || '').split('\n').length
+              }));
+            core.setOutput('items', JSON.stringify(items));
+
+      - name: Debug raw items
+        shell: bash
+        run: |
+          echo "---- raw items (first 2k) ----"
+          echo '${{ steps.prfiles.outputs.items }}' | head -c 2000; echo
+
+      # Apply your exclude_regex input. This keeps .cs files.
+      - name: Apply exclude_regex
+        id: filter
+        shell: bash
+        run: |
+          ITEMS='${{ steps.prfiles.outputs.items }}'
+          EX="${{ inputs.exclude_regex }}"
+          echo "$ITEMS" | jq --arg re "$EX" '[ .[] | select(.path|test($re) | not) ]' > items.filtered.json
+          echo "After filter count: $(jq 'length' items.filtered.json)"
+          echo "items=$(cat items.filtered.json)" >> $GITHUB_OUTPUT
+
+      # Count items for summary/comment later
+      - name: Count items
+        id: count
+        shell: bash
+        run: |
+          COUNT=$(jq 'length' <<< '${{ steps.filter.outputs.items }}')
+          echo "items_count=${COUNT}" >> "$GITHUB_OUTPUT"
+          echo "::notice::[prepare] items after filter = ${COUNT}"
+
+      # Create batches; if count == 0, still emit a single empty batch so review job runs
+      - name: Create batches for parallel processing (never empty)
+        id: mkbatches
+        shell: bash
+        run: |
+          ITEMS='${{ steps.filter.outputs.items }}'
+          MAX='${{ inputs.max_files }}'
+          if [ -z "$ITEMS" ] || [ "$ITEMS" = "[]" ]; then
+            echo '[{"id":"0","items":[]}]' > batches.json
+          else
+            jq -n --argjson items "$ITEMS" --argjson size "$MAX" '
+              if ($items|type) != "array" then
+                [{"id":"0","items":[]}]
+              else
+                ( if ($items|length) == 0 then
+                    [{"id":"0","items":[]}]
+                  else
+                    [range(0; ($items|length); $size)]
+                    | map({ id: tostring, items: ($items[. : .+$size]) })
+                  end )
+              end
+            ' > batches.json
+          fi
+          echo "Batches emitted: $(jq 'length' batches.json)"
+          echo "batches=$(cat batches.json)" >> $GITHUB_OUTPUT
+
+      - name: Debug batches
+        shell: bash
+        run: |
+          echo "---- batches (first 2k) ----"
+          cat batches.json | head -c 2000; echo
+
+
+  review:
+    name: AI Code Review / Review Batch ${{ matrix.batch.id }} (stub:guarantee files)
+    runs-on: ubuntu-latest
+    needs: [precheck, prepare]
+    if: ${{ needs.precheck.outputs.should_run == 'true' && needs.prepare.outputs.batches != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        batch: ${{ fromJSON(needs.prepare.outputs.batches) }}
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GEMINI_MODEL: ${{ inputs.model }}
+      MAX_DIFF_LINES: ${{ inputs.max_diff_lines }}
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v4
@@ -132,656 +237,166 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
 
-      - name: Checkout org .github control repo (for default policy)
-        continue-on-error: true
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/.github
-          ref: ${{ inputs.control_repo_ref }}
-          path: __org_control
-          fetch-depth: 1
-          token: ${{ secrets.PAT_TOKEN }}
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Resolve base/head SHAs with retry
-        id: shas
+      - name: Materialize batch items (always create marker when empty)
+        id: items
         shell: bash
         run: |
-          set -euo pipefail
-
-          retry_git() {
-            local cmd="$1"; local retries=3; local delay=5
-            for i in $(seq 1 $retries); do
-              if eval "$cmd"; then return 0; fi
-              echo "Git command failed (attempt $i/$retries), retrying in ${delay}s..."
-              sleep $delay
-            done
-            return 1
-          }
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "base=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
-            echo "head=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
-          else
-            retry_git "git fetch origin '${{ github.event.repository.default_branch || 'main' }}' --depth=1 --no-tags"
-            echo "base=$(git rev-parse 'origin/${{ github.event.repository.default_branch || 'main' }}')" >> $GITHUB_OUTPUT
-            echo "head=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Locate review policy (repo override or org default)
-        id: policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f "${{ inputs.policy_path }}" ]; then
-            echo "path=${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
-            echo "scope=repo" >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          elif [ -f "__org_control/${{ inputs.policy_path }}" ]; then
-            echo "path=__org_control/${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
-            echo "scope=org" >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Generate manifest with rate limiting
-        id: manifest
-        uses: actions/github-script@v7
-        env:
-          EXCLUDE_REGEX: ${{ inputs.exclude_regex }}
-          MAX_FILES: ${{ inputs.max_files }}
-          MAX_COMMITS: ${{ inputs.max_commits }}
-        with:
-          script: |
-            const exclude = new RegExp(process.env.EXCLUDE_REGEX || '');
-            const perCommitCap = parseInt(process.env.MAX_FILES || '15', 10);
-            const maxCommits = parseInt(process.env.MAX_COMMITS || '20', 10);
-
-            const {owner, repo, number} = context.issue;
-            if (!number) {
-              core.setFailed('This workflow must run on a PR (pull_request event or called with PR context).');
-              return;
-            }
-
-            const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-            let commits; let retries = 3;
-            while (retries > 0) {
-              try {
-                commits = await github.paginate(github.rest.pulls.listCommits, {owner, repo, pull_number: number});
-                break;
-              } catch (error) {
-                retries--; if (retries === 0) throw error;
-                console.log(`API call failed, retrying... (${retries} attempts left)`);
-                await delay(2000);
-              }
-            }
-
-            if (commits.length > maxCommits) commits = commits.slice(0, maxCommits);
-
-            const items = [];
-            for (const c of commits) {
-              const sha = c.sha;
-              await delay(100);
-
-              let commit; retries = 3;
-              while (retries > 0) {
-                try {
-                  commit = await github.rest.repos.getCommit({owner, repo, ref: sha});
-                  break;
-                } catch (error) {
-                  retries--; if (retries === 0) throw error;
-                  console.log(`Commit API call failed for ${sha}, retrying...`);
-                  await delay(2000);
-                }
-              }
-
-              let count = 0;
-              for (const f of (commit.data.files || [])) {
-                const path = f.filename;
-                if (exclude.test(path)) continue;
-                if (!['added','modified','renamed','changed'].includes(f.status)) continue;
-                const isBinary = (f.patch == null);
-                const item = {
-                  sha,
-                  path,
-                  status: f.status,
-                  is_binary: isBinary,
-                  renamed_from: f.previous_filename || null,
-                  additions: f.additions || 0,
-                  deletions: f.deletions || 0,
-                  patch: f.patch || null
-                };
-                items.push(item);
-                count++;
-                if (count >= perCommitCap) break;
-              }
-            }
-
-            core.setOutput('items', JSON.stringify(items, null, 2));
-
-      - name: Create batches for parallel processing
-        id: batch
-        uses: actions/github-script@v7
-        env:
-          BATCH_SIZE: ${{ inputs.batch_size }}
-          MAX_PARALLEL_BATCHES: ${{ inputs.max_parallel_batches }}
-          ITEMS_JSON: ${{ toJSON(steps.manifest.outputs.items) }}
-        with:
-          script: |
-            console.log("ITEMS_JSON:", process.env.ITEMS_JSON);
-            console.log("BATCH_SIZE:", process.env.BATCH_SIZE);
-            console.log("MAX_PARALLEL_BATCHES:", process.env.MAX_PARALLEL_BATCHES);
-            
-            if (!process.env.ITEMS_JSON || process.env.ITEMS_JSON === 'null') {
-              core.setFailed('ITEMS_JSON is null or empty. Check the previous step output.');
-              return;
-            }
-            
-            const items = JSON.parse(process.env.ITEMS_JSON);
-            let batchSize = parseInt(process.env.BATCH_SIZE || '3', 10);
-            const maxParallelBatches = parseInt(process.env.MAX_PARALLEL_BATCHES || '2', 10);
-            
-            // GitHub Actions matrix limit is 256 configurations
-            // Use a safe margin to avoid hitting the limit
-            const MAX_MATRIX_CONFIGS = 250;
-            
-            console.log(`Processing ${items.length} items with initial batch size ${batchSize}`);
-            
-            // Calculate how many batches we would create with current batch size
-            let estimatedBatches = Math.ceil(items.length / batchSize);
-            
-            // If we exceed the limit, increase batch size to fit within limits
-            if (estimatedBatches > MAX_MATRIX_CONFIGS) {
-              batchSize = Math.ceil(items.length / MAX_MATRIX_CONFIGS);
-              estimatedBatches = Math.ceil(items.length / batchSize);
-              console.log(`Adjusted batch size to ${batchSize} to stay within matrix limits (${estimatedBatches} batches)`);
-            }
-            
-            // Also respect the max_parallel_batches setting as an upper bound
-            if (estimatedBatches > maxParallelBatches && maxParallelBatches > 0) {
-              batchSize = Math.ceil(items.length / maxParallelBatches);
-              estimatedBatches = Math.ceil(items.length / batchSize);
-              console.log(`Further adjusted batch size to ${batchSize} to respect max_parallel_batches=${maxParallelBatches} (${estimatedBatches} batches)`);
-            }
-            
-            const batches = [];
-            for (let i = 0; i < items.length; i += batchSize) {
-              const batch = items.slice(i, i + batchSize);
-              batches.push({ id: Math.floor(i / batchSize), items: batch });
-            }
-            
-            console.log(`Created ${batches.length} batches with batch size ${batchSize}`);
-            
-            // Final safety check
-            if (batches.length > MAX_MATRIX_CONFIGS) {
-              core.setFailed(`Even after adjustments, batch count (${batches.length}) exceeds GitHub Actions matrix limit (${MAX_MATRIX_CONFIGS}). Consider increasing max file limits or reducing scope.`);
-              return;
-            }
-            
-            core.setOutput('batches', JSON.stringify(batches));
-
-      - name: Write batches file
-        shell: bash
-        run: |
-          printf '%s' '${{ steps.batch.outputs.batches }}' > "${RUNNER_TEMP}/batches.json"
-
-      - name: Upload batches artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: review-batches
-          path: ${{ runner.temp }}/batches.json
-
-  review:
-    name: Review Batch ${{ matrix.batch.id }}
-    needs: prepare
-    runs-on: ubuntu-latest
-    timeout-minutes: 30  # Added timeout
-    strategy:
-      max-parallel: ${{ fromJson(inputs.max_parallel_batches) }}
-      fail-fast: false
-      matrix:
-        batch: ${{ fromJson(needs.prepare.outputs.batches || '[]') }}
-    env:
-      GEMINI_MODEL: ${{ inputs.model }}
-      MAX_DIFF_LINES: ${{ inputs.max_diff_lines }}
-      FULL_FILE_THRESHOLD_LINES: ${{ inputs.full_file_threshold_lines }}
-      WINDOW_BEFORE: ${{ inputs.window_before }}
-      WINDOW_AFTER: ${{ inputs.window_after }}
-      MERGE_GAP_TOLERANCE: ${{ inputs.merge_gap_tolerance }}
-      MAX_WINDOWED_LINES: ${{ inputs.max_windowed_lines }}
-    steps:
-      - name: Checkout repo (full)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # ensure any SHA from the PR can be accessed via git show
-
-      - name: Checkout org .github control repo (for default policy)
-        continue-on-error: true
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/.github
-          ref: ${{ inputs.control_repo_ref }}
-          path: __org_control
-          fetch-depth: 1
-          token: ${{ secrets.PAT_TOKEN }}
-
-      - name: Re-locate review policy
-        id: policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f "${{ inputs.policy_path }}" ]; then
-            echo "path=${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
-            echo "scope=repo" >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          elif [ -f "__org_control/${{ inputs.policy_path }}" ]; then
-            echo "path=__org_control/${{ inputs.policy_path }}" >> "$GITHUB_OUTPUT"
-            echo "scope=org" >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install jq (for JSON processing)
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -y
-          sudo apt-get install -y jq
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Gemini CLI with retry
-        shell: bash
-        run: |
-          set -euo pipefail
-          retries=3
-          while [ $retries -gt 0 ]; do
-            if npm install -g @google/gemini-cli; then
-              break
-            fi
-            retries=$((retries - 1))
-            echo "npm install failed, retrying... ($retries attempts left)"
-            sleep 5
-          done
-
-      - name: Process batch of files sequentially
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          BATCH_ID: ${{ matrix.batch.id }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Use GitHub Actions script to properly handle JSON
-          cat > process_batch.js << 'EOF'
-          const fs = require('fs');
-
-          // Get the batch data from matrix context
-          const batchData = ${{ toJson(matrix.batch) }};
-
-          // Safely handle items - could be string, array, or undefined
-          let itemsArray;
-          try {
-            if (typeof batchData.items === 'string') {
-              itemsArray = JSON.parse(batchData.items);
-            } else if (Array.isArray(batchData.items)) {
-              itemsArray = batchData.items;
-            } else {
-              console.error('Invalid items format:', typeof batchData.items);
-              itemsArray = [];
-            }
-          } catch (error) {
-            console.error('Failed to parse items:', error.message);
-            itemsArray = [];
-          }
-
-          // Validate that we have an array
-          if (!Array.isArray(itemsArray)) {
-            console.error('Items is not an array after processing');
-            itemsArray = [];
-          }
-
-          // Write the items array to a file
-          fs.writeFileSync('batch_items.json', JSON.stringify(itemsArray, null, 2));
-
-          console.log(`Batch ID: ${batchData.id}`);
-          console.log(`Items in batch: ${itemsArray.length}`);
-          EOF
-
-          # Execute the JavaScript to create proper JSON
-          node process_batch.js
-
-          ensure_commit_present() {
-            # Fetch a specific commit if it isn't present locally
-            local sha="$1"
-            if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
-              git fetch --no-tags --depth=1 origin "$sha" || true
-            fi
-          }
-
-          echo "Processing batch: ${BATCH_ID}"
-
-          # Debug: Show the structure of what we're trying to parse
-          echo "First few characters of batch_items.json:"
-          head -c 100 batch_items.json
-          echo ""
-
-          # Validate JSON structure
-          if ! jq . batch_items.json > /dev/null 2>&1; then
-            echo "ERROR: Invalid JSON in batch_items.json"
+          mkdir -p reviews work
+          printf '%s' '${{ toJSON(matrix.batch.items) }}' > batch_items.json
+          if ! jq . batch_items.json >/dev/null 2>&1; then
+            echo "::error::Invalid batch items JSON"
             cat batch_items.json
             exit 1
           fi
+          COUNT=$(jq 'length' batch_items.json)
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+          echo "Items in this batch: $COUNT"
+          if [ "$COUNT" -eq 0 ]; then
+            # Create a batch-level stub so artifacts are never empty
+            echo "No eligible files in this batch." > "reviews/batch-${{ matrix.batch.id }}-NO-FILES.md"
+          fi
 
-          echo "Items in batch: $(jq '. | length' batch_items.json)"
+      - name: Check AI credentials
+        id: aicreds
+        shell: bash
+        run: |
+          if [ -z "${GEMINI_API_KEY:-}" ]; then
+            echo "available=false" >> $GITHUB_OUTPUT
+          else
+            echo "available=true" >> $GITHUB_OUTPUT
+          fi
 
+      - name: Generate per-file reviews (always leaves at least a stub file)
+        if: ${{ steps.items.outputs.count != '0' }}
+        shell: bash
+        env:
+          AI_AVAILABLE: ${{ steps.aicreds.outputs.available }}
+        run: |
+          PROCESSED=0
           jq -c '.[]' batch_items.json | while IFS= read -r item; do
-            echo "Processing: $(echo "$item" | jq -r '.path')"
-
-            SHA="$(echo "$item" | jq -r '.sha')"
             PATHNEW="$(echo "$item" | jq -r '.path')"
-            STATUS="$(echo "$item" | jq -r '.status')"
-            ISBIN="$(echo "$item" | jq -r '.is_binary')"
+            SHA="$(echo "$item" | jq -r '.sha')"
+            SAFE_PATH="$(printf '%s' "${PATHNEW}" | tr '/\\:*?"<>|' '_')"
+            OUTDIR="reviews/${SHA}"
+            OUT="${OUTDIR}/${SAFE_PATH}.md"
+            mkdir -p "$OUTDIR"
 
-            mkdir -p "work/${SHA}"
-            echo "$item" > "work/${SHA}/item.json"
+            # Best-effort context (non-fatal)
+            git show "${SHA}:${PATHNEW}" > "work.src" 2>/dev/null || true
+            git diff -U0 "${{ github.event.pull_request.base.sha || 'HEAD~1' }}" "${{ github.event.pull_request.head.sha || 'HEAD' }}" -- "${PATHNEW}" \
+              | head -n "${MAX_DIFF_LINES:-4000}" > work.diff || true
 
-            # Ensure commit is available locally for git show
-            ensure_commit_present "$SHA"
+            if [ "$AI_AVAILABLE" != "true" ]; then
+              printf "## %s @ %s\n\nSkipping AI review: credentials not available (fork PR or secret missing).\n" "$PATHNEW" "${SHA:0:8}" > "$OUT"
+            else
+              # === Replace the stub below with your real Gemini call; write model output to work.ai ===
+              echo "Pretend AI review for ${PATHNEW}" > work.ai || true
 
-            # Get patch with retry logic (use API-provided patch first)
-            echo "$item" | jq -r '.patch // empty' > "work/${SHA}/patch.diff" || true
-            if [ ! -s "work/${SHA}/patch.diff" ] && [ "${ISBIN}" != "true" ]; then
-              retries=3
-              while [ $retries -gt 0 ]; do
-                if git show --no-color --unified=0 "${SHA}" -- "${PATHNEW}" > "work/${SHA}/patch.diff" 2>/dev/null; then
-                  break
-                fi
-                retries=$((retries - 1))
-                echo "Git show (diff) failed, retrying... ($retries attempts left)"
-                sleep 2
-                ensure_commit_present "$SHA"
-              done
-            fi
-
-            # Truncate diff
-            if [ -s "work/${SHA}/patch.diff" ]; then
-              head -n "${MAX_DIFF_LINES}" "work/${SHA}/patch.diff" > "work/${SHA}/patch.trim" && mv "work/${SHA}/patch.trim" "work/${SHA}/patch.diff"
-            fi
-
-            # Get post-change content with retry
-            if [ "${ISBIN}" != "true" ]; then
-              retries=3
-              while [ $retries -gt 0 ]; do
-                if git show "${SHA}:${PATHNEW}" > "work/${SHA}/file.txt" 2>/dev/null; then
-                  break
-                fi
-                retries=$((retries - 1))
-                echo "Git show (content) failed, retrying... ($retries attempts left)"
-                sleep 2
-                ensure_commit_present "$SHA"
-              done
-            fi
-
-            # Determine mode
-            MODE="diff_only"
-            FILE_LINES="0"
-            if [ -f "work/${SHA}/file.txt" ]; then
-              FILE_LINES=$(wc -l < "work/${SHA}/file.txt" | tr -d ' ')
-              if [ "$FILE_LINES" -le "${FULL_FILE_THRESHOLD_LINES}" ]; then
-                MODE="full"
+              if [ ! -s work.ai ]; then
+                printf "## %s @ %s\n\nReview failed or empty AI response.\n" "$PATHNEW" "${SHA:0:8}" > "$OUT"
               else
-                MODE="windowed"
+                {
+                  echo "## ${PATHNEW} @ ${SHA:0:8}"
+                  echo
+                  cat work.ai
+                } > "$OUT"
               fi
             fi
 
-            # Build excerpts for windowed mode (merge simple windows)
-            if [ "$MODE" = "windowed" ] && [ -s "work/${SHA}/patch.diff" ]; then
-              # Calculate windows from diff hunks
-              grep -E '^@@ ' "work/${SHA}/patch.diff" | \
-              awk -v wb="${WINDOW_BEFORE}" -v wa="${WINDOW_AFTER}" '{
-                match($0, /\+([0-9]+),?([0-9]*)/, m)
-                c = m[1]; d = (m[2] == "" ? 1 : m[2])
-                start = c - wb; if (start < 1) start = 1
-                end = c + d - 1 + wa
-                print start " " end
-              }' | sort -n > "work/${SHA}/windows.raw" || true
-
-              # Merge overlapping/nearby windows using MERGE_GAP_TOLERANCE
-              if [ -s "work/${SHA}/windows.raw" ]; then
-                : > "work/${SHA}/windows.merged"
-                prevS=0; prevE=0
-                while read -r s e; do
-                  if [ $prevE -eq 0 ]; then
-                    prevS=$s; prevE=$e
-                  else
-                    gap=$(( s - prevE ))
-                    if [ $gap -le ${MERGE_GAP_TOLERANCE} ]; then
-                      if [ $e -gt $prevE ]; then prevE=$e; fi
-                    else
-                      echo "$prevS $prevE" >> "work/${SHA}/windows.merged"
-                      prevS=$s; prevE=$e
-                    fi
-                  fi
-                done < "work/${SHA}/windows.raw"
-                if [ $prevE -ne 0 ]; then echo "$prevS $prevE" >> "work/${SHA}/windows.merged"; fi
-
-                # Emit excerpts with a soft cap on total lines
-                total=0
-                : > "work/${SHA}/excerpts.txt"
-                while read -r s e; do
-                  len=$(( e - s + 1 ))
-                  if [ $(( total + len )) -gt ${MAX_WINDOWED_LINES} ]; then break; fi
-                  echo "--- BEGIN EXCERPT [lines ${s}-${e}] ---" >> "work/${SHA}/excerpts.txt"
-                  awk -v S="$s" -v E="$e" 'NR>=S && NR<=E { print }' "work/${SHA}/file.txt" >> "work/${SHA}/excerpts.txt"
-                  echo "--- END EXCERPT ---" >> "work/${SHA}/excerpts.txt"
-                  total=$(( total + len ))
-                done < "work/${SHA}/windows.merged"
-              fi
-            fi
-
-            # Build prompt
-            {
-              echo "You are reviewing exactly ONE file in a PR."
-              echo
-              echo "Repository: ${{ github.repository }}"
-              echo "Commit: ${SHA}"
-              echo "File: ${PATHNEW}"
-              echo "Status: ${STATUS}"
-              echo "Context-Mode: ${MODE}${FILE_LINES:+ (file lines: ${FILE_LINES})}"
-              echo
-              echo "STRICT RULES:"
-              echo "- Review ONLY this file at this commit."
-              echo "- Use ONLY the unified diff below and the provided post-change content (if any)."
-              echo "- If cross-file context is needed, reply: 'Out of scope: requires cross-file context.'"
-              echo "- Be specific with line references and provide actionable, testable suggestions."
-              echo
-              if [ "${{ steps.policy.outputs.found }}" = "true" ]; then
-                echo "--- BEGIN REVIEW POLICY (${{ steps.policy.outputs.scope }}) ---"
-                cat "${{ steps.policy.outputs.path }}"
-                echo "--- END REVIEW POLICY ---"
-                echo
-              fi
-              echo "--- BEGIN DIFF (file-scoped) ---"
-              if [ -s "work/${SHA}/patch.diff" ]; then
-                cat "work/${SHA}/patch.diff"
-              else
-                echo "(No diff content available for this file.)"
-              fi
-              echo "--- END DIFF ---"
-              echo
-              if [ "${MODE}" = "full" ] && [ -s "work/${SHA}/file.txt" ]; then
-                echo "--- BEGIN POST-CHANGE CONTENT (FULL) ---"
-                cat "work/${SHA}/file.txt"
-                echo "--- END POST-CHANGE CONTENT ---"
-              elif [ "${MODE}" = "windowed" ] && [ -s "work/${SHA}/excerpts.txt" ]; then
-                echo "--- BEGIN POST-CHANGE EXCERPTS (WINDOWED) ---"
-                cat "work/${SHA}/excerpts.txt"
-                echo "--- END POST-CHANGE EXCERPTS ---"
-              else
-                echo "(No post-change content included.)"
-              fi
-            } > "work/${SHA}/prompt.md"
-
-            # Call Gemini with retry and rate limiting
-            retries=3
-            while [ $retries -gt 0 ]; do
-              sleep 2
-              if gemini --yolo --model "$GEMINI_MODEL" --prompt "$(cat "work/${SHA}/prompt.md")" > "work/${SHA}/out.body" 2>/dev/null; then
-                break
-              elif gemini --yolo --model "gemini-2.0-pro" --prompt "$(cat "work/${SHA}/prompt.md")" > "work/${SHA}/out.body" 2>/dev/null; then
-                break
-              fi
-              retries=$((retries - 1))
-              echo "Gemini API call failed, retrying... ($retries attempts left)"
-              sleep 5
-            done
-
-            # Generate output with unique naming
-            mkdir -p "reviews/${SHA}"
-            SAFE_PATH="$(printf '%s' "${PATHNEW}" | tr '/\:*?"<>|' '_')"  # sanitize
-            OUT="reviews/${SHA}/${SAFE_PATH}.md"
-            {
-              echo "## ${PATHNEW} @ ${SHA:0:8}"
-              echo
-              echo "**Mode:** ${MODE}  |  **Lines:** ${FILE_LINES:-0}"
-              echo
-              if [ -s "work/${SHA}/out.body" ]; then
-                cat "work/${SHA}/out.body"
-              else
-                echo "Review failed - no response from AI service."
-              fi
-              echo
-              echo "---"
-            } > "${OUT}"
-
-            echo "Completed: ${PATHNEW}"
+            PROCESSED=$((PROCESSED+1))
           done
+          echo "processed=${PROCESSED}" >> $GITHUB_OUTPUT
 
-      - name: Upload batch review artifact
+      - name: Upload batch artifact (only when something exists)
+        if: ${{ hashFiles('reviews/**') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: review-batch-${{ matrix.batch.id }}
           path: reviews/
-          if-no-files-found: warn
 
   summarize:
-    name: Summarize and publish review
-    needs: [prepare, review]
-    if: ${{ always() && needs.prepare.result == 'success' }}    
+    name: Summarize & Comment (stub:always post)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    needs: [prepare, review]
+    if: always()
+    permissions:
+      pull-requests: write
+      contents: write
     steps:
-      - name: Checkout PR head (for optional commit)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # full history in case we need it
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Download all review artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: all-reviews
-          pattern: review-batch-*
-          merge-multiple: true
-
-      - name: Stitch per-commit and PR-level summaries
-        id: stitch
+      - name: Compute summary body
+        id: summary
         shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p compiled
-          echo "# AI Review Summary for PR #${{ github.event.pull_request.number }}" > compiled/SUMMARY.md
-          echo >> compiled/SUMMARY.md
-
-          if find all-reviews -name "*.md" -type f | head -1 >/dev/null 2>&1; then
-            for d in $(find all-reviews -mindepth 1 -maxdepth 1 -type d | sed 's|.*/||' | sort); do
-              echo "- Commit ${d}" >> compiled/SUMMARY.md
-              mkdir -p "compiled/${d}"
-              echo "# Commit ${d}" > "compiled/${d}/index.md"
-              if ls "all-reviews/${d}"/*.md > /dev/null 2>&1; then
-                for f in $(ls -1 "all-reviews/${d}"/*.md | sort); do
-                  cat "$f" >> "compiled/${d}/index.md"
-                  echo >> "compiled/${d}/index.md"
-                done
-              fi
-            done
-          else
-            echo "No review artifacts found." >> compiled/SUMMARY.md
-          fi
-
-          {
-            echo "# PR-level Review Report"
-            echo
-            for d in $(ls -1 compiled | grep -v SUMMARY.md | sort); do
-              if [ -f "compiled/$d/index.md" ]; then
-                echo
-                echo "## Commit ${d}"
-                echo
-                cat "compiled/$d/index.md"
-              fi
-            done
-          } > compiled/PR-REPORT.md
-
-          echo "pr_report=compiled/PR-REPORT.md" >> $GITHUB_OUTPUT
-
-      - name: Upload compiled summary artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ai-review-compiled
-          path: compiled/
-
-      - name: Commit review results into PR branch (if allowed and requested)
-        if: |
-          github.event_name == 'pull_request' &&
-          !github.event.pull_request.head.repo.fork &&
-          (inputs.post_mode == 'commit' || inputs.post_mode == 'both')
         env:
-          PAT: ${{ secrets.PAT_TOKEN }}
-        shell: bash
+          BATCHES_JSON: ${{ needs.prepare.outputs.batches }}
+          ITEMS_COUNT: ${{ needs.prepare.outputs.items_count }}
         run: |
-          set -euo pipefail
-          OUT_DIR=".github/review-results"
-          mkdir -p "$OUT_DIR"
-          cp -r compiled/* "$OUT_DIR"/
+          # Defensive defaults
+          BATCHES="${BATCHES_JSON:-[]}"
+          COUNT_ITEMS="${ITEMS_COUNT:-0}"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Derive total files from batches when available
+          DERIVED_TOTAL=$(printf '%s' "$BATCHES" | jq -r 'map(.items|length) | add // 0' 2>/dev/null || echo "0")
 
-          # Make push rebase-aware to avoid races
-          current_branch="${{ github.event.pull_request.head.ref || '' }}"
-          retries=3
-          while [ $retries -gt 0 ]; do
-            git remote set-url origin "https://x-access-token:${PAT}@github.com/${{ github.repository }}.git"
-            if [ -n "$current_branch" ]; then
-              git fetch origin "$current_branch" --depth=1 || true
-              git pull --rebase origin "$current_branch" || true
-            fi
-            git add "$OUT_DIR" || true
-            if git commit -m "chore: add AI review results for PR #${{ github.event.pull_request.number }} [skip ci]"; then
-              if git push; then
-                echo "Successfully committed and pushed review results"
-                break
-              fi
-            fi
-            retries=$((retries - 1))
-            echo "Git operation failed, retrying... ($retries attempts left)"
-            sleep 5
-          done
-
-          if [ $retries -eq 0 ]; then
-            echo "::warning::Failed to commit review results after multiple attempts"
+          # Prefer items_count output, fall back to derived
+          if [ -z "$COUNT_ITEMS" ] || [ "$COUNT_ITEMS" = "0" ]; then
+            COUNT="$DERIVED_TOTAL"
+          else
+            COUNT="$COUNT_ITEMS"
           fi
 
-      - name: Note fork fallback / artifact-only
-        if: |
-          github.event_name == 'pull_request' &&
-          ( github.event.pull_request.head.repo.fork ||
-            inputs.post_mode == 'artifact_only' )
-        run: |
-          echo "::notice::Results published as workflow artifacts. Commit to branch skipped (fork or artifact_only mode)."
+          # Review job status (success/failure/cancelled)
+          STATUS="${{ needs.review.result }}"
+
+          # Build message
+          {
+            echo "### AI Code Review — Run Summary"
+            echo
+            echo "- **Files discovered:** ${COUNT}"
+            echo "- **Review job status:** ${STATUS}"
+            echo
+            if [ "$COUNT" -eq 0 ]; then
+              echo "ℹ️ No eligible files after filtering. A **batch-level stub file** was created so artifacts are never empty."
+            else
+              echo "✅ Per-file artifacts were produced. Each item has a markdown file; if AI was unavailable, a **stub** explains why."
+            fi
+            echo
+            echo "_This is a triage stub: comment always posted to verify PR-notification plumbing._"
+          } > body.md
+
+          # Expose for github-script
+          printf "body<<'EOF'\n" >> "$GITHUB_OUTPUT"
+          cat body.md >> "$GITHUB_OUTPUT"
+          printf "\nEOF\n" >> "$GITHUB_OUTPUT"
+
+      - name: Post PR comment (always)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) { core.info('No PR context; skipping comment.'); return; }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: `${{ steps.summary.outputs.body }}`
+            });
+
+      # Optional: commit a persistent summary into the PR branch
+      # - name: Commit consolidated summary (optional)
+      #   if: always()
+      #   shell: bash
+      #   run: |
+      #     SUMMARY_DIR=".github/review-results"
+      #     SUMMARY_FILE="${SUMMARY_DIR}/review-${{ github.run_id }}.md"
+      #     mkdir -p "$SUMMARY_DIR"
+      #     cp body.md "$SUMMARY_FILE"
+      #     git config user.name "github-actions[bot]"
+      #     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      #     git add "$SUMMARY_FILE" && git commit -m "AI review summary (run ${{ github.run_id }})" || true
+      #     git push || true
