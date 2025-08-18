@@ -93,4 +93,9 @@ runs:
         mkdir -p "${RUNNER_TEMP}"
         cp "${batches_file}" "${RUNNER_TEMP}/batches.json"
 
-        echo "batches=$(cat "${batches_file}")" >> "$GITHUB_OUTPUT"
+        # ✅ set multiline output safely
+        {
+          echo 'batches<<__JSON__' >> "$GITHUB_OUTPUT"
+          cat "${batches_file}" >> "$GITHUB_OUTPUT"
+          echo '__JSON__' >> "$GITHUB_OUTPUT"
+        }
