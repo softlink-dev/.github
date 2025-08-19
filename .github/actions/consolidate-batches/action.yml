@@ -134,7 +134,7 @@ runs:
           if [ -f "$SUMMARY_TEMPLATE_PATH" ]; then
             SUMMARY_TEMPLATE=$(cat "$SUMMARY_TEMPLATE_PATH")
           else
-            SUMMARY_TEMPLATE='You are a technical writer tasked with creating a concise summary of a code review.
+            SUMMARY_TEMPLATE="You are a technical writer tasked with creating a concise summary of a code review.
 
 ## TASK
 Summarize the following code review in under 500 words. Focus on the most important findings and actionable recommendations.
@@ -154,13 +154,13 @@ Summarize the following code review in under 500 words. Focus on the most import
 - End with overall assessment
 
 ## CODE REVIEW TO SUMMARIZE:
-{{REVIEW_CONTENT}}
+REVIEW_CONTENT_PLACEHOLDER
 
-## SUMMARY (under 500 words):'
+## SUMMARY (under 500 words):"
           fi
           
           # Replace template variable with actual review content
-          SUMMARY_PROMPT=$(echo "$SUMMARY_TEMPLATE" | sed "s|{{REVIEW_CONTENT}}|$(cat "$DETAILED_REVIEW_FILE")|g")
+          SUMMARY_PROMPT=$(echo "$SUMMARY_TEMPLATE" | sed "s|REVIEW_CONTENT_PLACEHOLDER|$(cat "$DETAILED_REVIEW_FILE")|g")
 
           # Create summary using Gemini CLI
           SUMMARY_CONTENT=$(echo "$SUMMARY_PROMPT" | gemini --model gemini-2.5-pro --prompt - 2>/dev/null || echo "Summary generation failed")
