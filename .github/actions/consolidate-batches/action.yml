@@ -1,5 +1,5 @@
-name: Consolidate Batches
-description: Consolidate batch review results and generate AI summaries.
+name: Consolidate Reviews
+description: Combine individual file reviews into a consolidated detailed review and summary.
 
 inputs:
   gemini_api_key:
@@ -30,98 +30,50 @@ runs:
       run: |
         set -euo pipefail
         
-        echo "Starting batch consolidation..."
+        echo "Starting review consolidation..."
         mkdir -p consolidated
         
         # Get PR number for context
         PR_NUM="${{ github.event.pull_request.number || '' }}"
         
-        # Create detailed review by combining all batch results
+        # Create detailed review by combining all file reviews
         echo "# AI Code Review - Detailed Report ${PR_NUM:+for PR #$PR_NUM}" > consolidated/DETAILED-REVIEW.md
         echo "" >> consolidated/DETAILED-REVIEW.md
         echo "*Generated on $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> consolidated/DETAILED-REVIEW.md
         echo "" >> consolidated/DETAILED-REVIEW.md
         
-        # Check if we have batch artifacts
-        if [ -d "review-batch-*" ] || [ -f "reviews/summary.json" ]; then
-          echo "Found batch results, consolidating..."
+        # Check if we have review files
+        if find reviews -name "*.md" -type f | head -1 >/dev/null 2>&1; then
+          echo "Found review files, consolidating..."
           
-          # Get overall summary info
-          echo "## 📊 Review Summary" >> consolidated/DETAILED-REVIEW.md
-          echo "" >> consolidated/DETAILED-REVIEW.md
-          
-          # Collect batch statistics
-          TOTAL_FILES=0
-          TOTAL_PROCESSED=0
-          TOTAL_FAILED=0
-          BATCH_COUNT=0
-          
-          # Process each batch artifact
-          for batch_dir in review-batch-*; do
-            if [ -d "$batch_dir" ]; then
-              BATCH_COUNT=$((BATCH_COUNT + 1))
-              echo "Processing batch: $batch_dir"
-              
-              # Get batch summary
-              if [ -f "$batch_dir/reviews/summary.json" ]; then
-                BATCH_TOTAL=$(jq -r '.total' "$batch_dir/reviews/summary.json" 2>/dev/null || echo "0")
-                BATCH_PROCESSED=$(jq -r '.processed' "$batch_dir/reviews/summary.json" 2>/dev/null || echo "0")
-                BATCH_FAILED=$(jq -r '.failed' "$batch_dir/reviews/summary.json" 2>/dev/null || echo "0")
-                
-                TOTAL_FILES=$((TOTAL_FILES + BATCH_TOTAL))
-                TOTAL_PROCESSED=$((TOTAL_PROCESSED + BATCH_PROCESSED))
-                TOTAL_FAILED=$((TOTAL_FAILED + BATCH_FAILED))
-                
-                echo "- **Batch $BATCH_COUNT:** $BATCH_PROCESSED/$BATCH_TOTAL files processed" >> consolidated/DETAILED-REVIEW.md
-              fi
-            fi
-          done
-          
-          # Add overall statistics
-          echo "" >> consolidated/DETAILED-REVIEW.md
-          echo "### Overall Statistics" >> consolidated/DETAILED-REVIEW.md
-          echo "- **Total batches:** $BATCH_COUNT" >> consolidated/DETAILED-REVIEW.md
-          echo "- **Total files reviewed:** $TOTAL_FILES" >> consolidated/DETAILED-REVIEW.md
-          echo "- **Successfully processed:** $TOTAL_PROCESSED" >> consolidated/DETAILED-REVIEW.md
-          echo "- **Failed:** $TOTAL_FAILED" >> consolidated/DETAILED-REVIEW.md
-          echo "" >> consolidated/DETAILED-REVIEW.md
+          # Get summary info
+          if [ -f "reviews/summary.json" ]; then
+            echo "## 📊 Review Summary" >> consolidated/DETAILED-REVIEW.md
+            echo "" >> consolidated/DETAILED-REVIEW.md
+            
+            # Extract summary info from JSON
+            TOTAL=$(jq -r '.total' reviews/summary.json 2>/dev/null || echo "unknown")
+            PROCESSED=$(jq -r '.processed' reviews/summary.json 2>/dev/null || echo "unknown")
+            FAILED=$(jq -r '.failed' reviews/summary.json 2>/dev/null || echo "unknown")
+            
+            echo "- **Total files reviewed:** $TOTAL" >> consolidated/DETAILED-REVIEW.md
+            echo "- **Successfully processed:** $PROCESSED" >> consolidated/DETAILED-REVIEW.md
+            echo "- **Failed:** $FAILED" >> consolidated/DETAILED-REVIEW.md
+            echo "" >> consolidated/DETAILED-REVIEW.md
+          fi
           
           # Combine all file reviews
           echo "## 📝 File Reviews" >> consolidated/DETAILED-REVIEW.md
           echo "" >> consolidated/DETAILED-REVIEW.md
           
-          # Process each batch directory
-          for batch_dir in review-batch-*; do
-            if [ -d "$batch_dir" ]; then
-              echo "### Batch $batch_dir" >> consolidated/DETAILED-REVIEW.md
+          # Process each review file
+          for review_file in $(find reviews -name "*.md" -type f | grep -v summary.json | sort); do
+            if [ -f "$review_file" ]; then
+              echo "Processing: $review_file"
+              cat "$review_file" >> consolidated/DETAILED-REVIEW.md
               echo "" >> consolidated/DETAILED-REVIEW.md
-              
-              # Process each review file in the batch
-              if [ -d "$batch_dir/reviews" ]; then
-                for review_file in $(find "$batch_dir/reviews" -name "*.md" -type f | grep -v summary.json | sort); do
-                  if [ -f "$review_file" ]; then
-                    echo "Processing: $review_file"
-                    cat "$review_file" >> consolidated/DETAILED-REVIEW.md
-                    echo "" >> consolidated/DETAILED-REVIEW.md
-                  fi
-                done
-              fi
             fi
           done
-          
-          # Also check for direct reviews directory (fallback)
-          if [ -d "reviews" ] && [ $BATCH_COUNT -eq 0 ]; then
-            echo "### Direct Reviews" >> consolidated/DETAILED-REVIEW.md
-            echo "" >> consolidated/DETAILED-REVIEW.md
-            
-            for review_file in $(find reviews -name "*.md" -type f | grep -v summary.json | sort); do
-              if [ -f "$review_file" ]; then
-                echo "Processing: $review_file"
-                cat "$review_file" >> consolidated/DETAILED-REVIEW.md
-                echo "" >> consolidated/DETAILED-REVIEW.md
-              fi
-            done
-          fi
           
           # Create detailed review first
           DETAILED_REVIEW_FILE="consolidated/DETAILED-REVIEW.md"
@@ -154,13 +106,13 @@ Summarize the following code review in under 500 words. Focus on the most import
 - End with overall assessment
 
 ## CODE REVIEW TO SUMMARIZE:
-REVIEW_CONTENT_PLACEHOLDER
+{{REVIEW_CONTENT}}
 
 ## SUMMARY (under 500 words):"
           fi
           
           # Replace template variable with actual review content
-          SUMMARY_PROMPT=$(echo "$SUMMARY_TEMPLATE" | sed "s|REVIEW_CONTENT_PLACEHOLDER|$(cat "$DETAILED_REVIEW_FILE")|g")
+          SUMMARY_PROMPT=$(echo "$SUMMARY_TEMPLATE" | sed "s|{{REVIEW_CONTENT}}|$(cat "$DETAILED_REVIEW_FILE")|g")
 
           # Create summary using Gemini CLI
           SUMMARY_CONTENT=$(echo "$SUMMARY_PROMPT" | gemini --model gemini-2.5-pro --prompt - 2>/dev/null || echo "Summary generation failed")
@@ -170,57 +122,44 @@ REVIEW_CONTENT_PLACEHOLDER
           echo "" >> consolidated/SUMMARY.md
           echo "*Generated on $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> consolidated/SUMMARY.md
           echo "" >> consolidated/SUMMARY.md
-          
-          echo "## 📊 Review Statistics" >> consolidated/SUMMARY.md
-          echo "" >> consolidated/SUMMARY.md
-          echo "- **Total batches:** $BATCH_COUNT" >> consolidated/SUMMARY.md
-          echo "- **Total files:** $TOTAL_FILES" >> consolidated/SUMMARY.md
-          echo "- **Successfully reviewed:** $TOTAL_PROCESSED" >> consolidated/SUMMARY.md
-          echo "- **Failed:** $TOTAL_FAILED" >> consolidated/SUMMARY.md
-          echo "" >> consolidated/SUMMARY.md
-          
+
+          if [ -f "reviews/summary.json" ]; then
+            echo "## 📊 Review Statistics" >> consolidated/SUMMARY.md
+            echo "" >> consolidated/SUMMARY.md
+            echo "- **Total files:** $TOTAL" >> consolidated/SUMMARY.md
+            echo "- **Successfully reviewed:** $PROCESSED" >> consolidated/SUMMARY.md
+            echo "- **Failed:** $FAILED" >> consolidated/SUMMARY.md
+            echo "" >> consolidated/SUMMARY.md
+          fi
+
           echo "## 🎯 Executive Summary" >> consolidated/SUMMARY.md
           echo "" >> consolidated/SUMMARY.md
           echo "$SUMMARY_CONTENT" >> consolidated/SUMMARY.md
           echo "" >> consolidated/SUMMARY.md
-          
+
           echo "## 📋 All Reviewed Files" >> consolidated/SUMMARY.md
           echo "" >> consolidated/SUMMARY.md
-          
-          # List all reviewed files from all batches
-          for batch_dir in review-batch-*; do
-            if [ -d "$batch_dir" ] && [ -d "$batch_dir/reviews" ]; then
-              for review_file in $(find "$batch_dir/reviews" -name "*.md" -type f | grep -v summary.json | sort); do
-                if [ -f "$review_file" ]; then
-                  filename=$(basename "$review_file" .md)
-                  # Convert sanitized filename back to original path (approximate)
-                  original_path=$(echo "$filename" | sed 's/_/\//g' | sed 's/^\.\///')
-                  echo "- $original_path" >> consolidated/SUMMARY.md
-                fi
-              done
+
+          # List all reviewed files
+          for review_file in $(find reviews -name "*.md" -type f | grep -v summary.json | sort); do
+            if [ -f "$review_file" ]; then
+              filename=$(basename "$review_file" .md)
+              # Convert sanitized filename back to original path (approximate)
+              original_path=$(echo "$filename" | sed 's/_/\//g' | sed 's/^\.\///')
+              echo "- $original_path" >> consolidated/SUMMARY.md
             fi
           done
-          
-          # Also check for direct reviews directory
-          if [ -d "reviews" ] && [ $BATCH_COUNT -eq 0 ]; then
-            for review_file in $(find reviews -name "*.md" -type f | grep -v summary.json | sort); do
-              if [ -f "$review_file" ]; then
-                filename=$(basename "$review_file" .md)
-                original_path=$(echo "$filename" | sed 's/_/\//g' | sed 's/^\.\///')
-                echo "- $original_path" >> consolidated/SUMMARY.md
-              fi
-            done
-          fi
-          
+
           echo "" >> consolidated/SUMMARY.md
           echo "---" >> consolidated/SUMMARY.md
           echo "*For detailed review comments and specific recommendations, see the full detailed review.*" >> consolidated/SUMMARY.md
           
         else
-          echo "No batch results found to consolidate." >> consolidated/DETAILED-REVIEW.md
-          echo "No batch results found to consolidate." >> consolidated/SUMMARY.md
+          echo "No review files found." >> consolidated/DETAILED-REVIEW.md
+          echo "No review files found." >> consolidated/SUMMARY.md
         fi
         
-        echo "🎉 Batch consolidation complete!"
-        echo "📁 Detailed review: consolidated/DETAILED-REVIEW.md"
-        echo "📋 Summary: consolidated/SUMMARY.md"
+        echo "Consolidation complete!"
+        echo "Files created:"
+        echo "- consolidated/DETAILED-REVIEW.md"
+        echo "- consolidated/SUMMARY.md"
