@@ -1,0 +1,24 @@
+name: Test AI Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      post_mode:
+        description: 'How to post review results'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+        - artifact_only
+        - commit
+        - comment
+        - both
+
+jobs:
+  test-review:
+    uses: ./.github/workflows/gemini-pr-review-v2.yml
+    with:
+      post_mode: ${{ github.event.inputs.post_mode }}
+      force_review: true
+      min_lines_threshold: 1
+    secrets: inherit
