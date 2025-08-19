@@ -137,7 +137,7 @@ jobs:
           max_windowed_lines: ${{ inputs.max_windowed_lines }}
           policy_found: ${{ needs.prepare.outputs.policy_found }}
           policy_scope: ${{ needs.prepare.outputs.policy_scope }}
-          policy_path_resolved: ${{ needs.prepare.outputs.policy_path_resolved }}
+          policy_path: ${{ needs.prepare.outputs.policy_path_resolved }}
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
