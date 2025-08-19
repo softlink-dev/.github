@@ -107,11 +107,18 @@ async function processFile(item, model, MAX_DIFF, FULL_FILE, WB, WA, GAP, MAX_WI
     excerpts = buildExcerpts(diff, content, WB, WA, GAP, MAX_WIN);
   }
 
-  // Prompt
-  let prompt = `You are a code reviewer analyzing a SINGLE file from a pull request.
+  // Load prompt template
+  const promptTemplatePath = __dirname + '/prompt-template.md';
+  let promptTemplate = '';
+  try {
+    promptTemplate = fs.readFileSync(promptTemplatePath, 'utf8');
+    core.info(`📝 Using prompt template from: ${promptTemplatePath}`);
+  } catch (error) {
+    core.warning(`⚠️ Could not load prompt template from ${promptTemplatePath}, using fallback`);
+    promptTemplate = `You are a code reviewer analyzing a SINGLE file from a pull request.
 
 CRITICAL SCOPE LIMITATION:
-- You are reviewing ONLY the file: "${filePath}"
+- You are reviewing ONLY the file: "{{FILE_PATH}}"
 - You can ONLY see the diff and file content provided below
 - You CANNOT browse the repository, access other files, or see the broader codebase
 - You CANNOT make assumptions about other files or project structure
@@ -119,10 +126,10 @@ CRITICAL SCOPE LIMITATION:
 - You CANNOT say "I will continue listing files" or similar phrases
 
 File Details:
-- Path: ${filePath}
-- Commit: ${sha}
-- Status: ${status}
-- Mode: ${mode}${fileLines ? ' (file lines: '+fileLines+')' : ''}
+- Path: {{FILE_PATH}}
+- Commit: {{COMMIT_SHA}}
+- Status: {{STATUS}}
+- Mode: {{MODE}} (file lines: {{FILE_LINES}})
 
 REVIEW INSTRUCTIONS:
 1. Analyze ONLY the provided diff and file content
@@ -140,24 +147,56 @@ Review Focus Areas:
 - Best practices violations
 - Specific, actionable improvement suggestions
 
-CRITICAL: You are reviewing ONLY "${filePath}". You cannot see any other files. If you cannot provide a meaningful review with only the provided content, say "REQUIRES CROSS-FILE CONTEXT" instead of making assumptions or trying to browse the repository.
-`;
+CRITICAL: You are reviewing ONLY "{{FILE_PATH}}". You cannot see any other files. If you cannot provide a meaningful review with only the provided content, say "REQUIRES CROSS-FILE CONTEXT" instead of making assumptions or trying to browse the repository.
 
-  if (POLICY_FOUND && POLICY_PATH && fs.existsSync(POLICY_PATH)) {
-    prompt += `\n--- BEGIN REVIEW POLICY (${POLICY_SCOPE}) ---\n${fs.readFileSync(POLICY_PATH,'utf8')}\n--- END REVIEW POLICY ---\n`;
+---
+
+## DIFF CONTENT
+\`\`\`
+{{DIFF_CONTENT}}
+\`\`\`
+
+---
+
+## FILE CONTENT
+{{FILE_CONTENT_SECTION}}
+
+---
+
+## FINAL REMINDER
+You are reviewing ONLY "{{FILE_PATH}}". You cannot see any other files or the broader codebase. Do NOT try to list files, explore directories, or navigate the repository. If you need more context, say "REQUIRES CROSS-FILE CONTEXT" instead of making assumptions.`;
   }
 
-  prompt += `\n--- BEGIN DIFF (file-scoped) ---\n${diff || '(No diff content available for this file.)'}\n--- END DIFF ---\n`;
-
+  // Prepare file content section
+  let fileContentSection = '';
   if (mode === 'full' && content) {
-    prompt += `\n--- BEGIN POST-CHANGE CONTENT (FULL) ---\n${content}\n--- END POST-CHANGE CONTENT ---\n`;
+    fileContentSection = `## FULL FILE CONTENT\n\`\`\`\n${content}\n\`\`\``;
   } else if (mode === 'windowed' && excerpts) {
-    prompt += `\n--- BEGIN POST-CHANGE EXCERPTS (WINDOWED) ---\n${excerpts}\n--- END POST-CHANGE EXCERPTS ---\n`;
+    fileContentSection = `## WINDOWED FILE EXCERPTS\n\`\`\`\n${excerpts}\n\`\`\``;
   } else {
-    prompt += `\n(No post-change content included.)\n`;
+    fileContentSection = `(No post-change content included - file is binary or no content available)`;
   }
 
-  prompt += `\n\nFINAL REMINDER: You are reviewing ONLY "${filePath}". You cannot see any other files or the broader codebase. Do NOT try to list files, explore directories, or navigate the repository. If you need more context, say "REQUIRES CROSS-FILE CONTEXT" instead of making assumptions.`;
+  // Add policy if found
+  if (POLICY_FOUND && POLICY_PATH && fs.existsSync(POLICY_PATH)) {
+    fileContentSection += `\n\n## REVIEW POLICY (${POLICY_SCOPE})\n\`\`\`\n${fs.readFileSync(POLICY_PATH,'utf8')}\n\`\`\``;
+  }
+
+  // Replace template variables
+  let prompt = promptTemplate
+    .replace(/{{FILE_PATH}}/g, filePath)
+    .replace(/{{COMMIT_SHA}}/g, sha)
+    .replace(/{{STATUS}}/g, status)
+    .replace(/{{MODE}}/g, mode)
+    .replace(/{{FILE_LINES}}/g, fileLines || 0)
+    .replace(/{{DIFF_CONTENT}}/g, diff || '(No diff content available for this file.)')
+    .replace(/{{FILE_CONTENT_SECTION}}/g, fileContentSection);
+
+  // Debug: Save the actual prompt to a file for inspection
+  const debugPromptPath = `debug-prompt-${sanitize(filePath)}.md`;
+  fs.writeFileSync(debugPromptPath, prompt, 'utf8');
+  core.info(`🔍 Debug prompt saved to: ${debugPromptPath}`);
+  core.info(`📝 Prompt template path: ${promptTemplatePath}`);
 
   // Call Gemini
   const body = await callGemini(model, prompt);
