@@ -96,7 +96,7 @@ jobs:
   prepare:
     name: Build review manifest
     needs: precheck
-    uses: softlink-dev/.github/.github/workflows/_prepare.yml@main
+    uses: softlink-dev/.github/.github/workflows/_prepare-enhanced.yml@main
     with:
       exclude_regex: ${{ inputs.exclude_regex }}
       max_files: ${{ inputs.max_files }}
@@ -115,7 +115,7 @@ jobs:
       fail-fast: false
       matrix:
         batch: ${{ fromJson(needs.prepare.outputs.batches || '[]') }}
-    uses: softlink-dev/.github/.github/workflows/_review-batch.yml@main
+    uses: softlink-dev/.github/.github/workflows/_review-batch-enhanced.yml@main
     with:
       batch_json: ${{ toJson(matrix.batch) }}
       model: ${{ inputs.model }}
@@ -135,7 +135,7 @@ jobs:
     name: Summarize and publish review
     needs: [prepare, review]
     if: ${{ always() && needs.prepare.result == 'success' }}
-    uses: softlink-dev/.github/.github/workflows/_summarize.yml@main
+    uses: softlink-dev/.github/.github/workflows/_summarize-enhanced.yml@main
     with:
       post_mode: ${{ inputs.post_mode }}
     secrets: inherit
