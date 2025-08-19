@@ -36,4 +36,5 @@ jobs:
       max_parallel_batches: "1"
       force_review: true
       min_lines_threshold: "1"
+      post_mode: "both"
     secrets: inherit

@@ -45,7 +45,7 @@ jobs:
       files_changed: ${{ steps.gate.outputs.files_changed }}
     steps:
       - id: gate
-        uses:  softlink-dev/.github/.github/actions/precheck@main
+        uses:  ./.github/actions/precheck
         with:
           force_review: ${{ inputs.force_review }}
           min_lines_threshold: ${{ inputs.min_lines_threshold }}
