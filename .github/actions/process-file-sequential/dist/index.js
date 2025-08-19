@@ -27739,13 +27739,9 @@ You are reviewing ONLY "{{FILE_PATH}}". You cannot see any other files or the br
     fileContentSection += `\n\n## REVIEW POLICY (${POLICY_SCOPE})\n\`\`\`\n${fs.readFileSync(POLICY_PATH,'utf8')}\n\`\`\``;
   }
 
-  // Build GitHub URL for the file
-  const githubUrl = `https://github.com/${process.env.GITHUB_REPOSITORY}/blob/${sha}/${filePath}`;
-  
   // Replace template variables
   let prompt = promptTemplate
     .replace(/{{FILE_PATH}}/g, filePath)
-    .replace(/{{GITHUB_URL}}/g, githubUrl)
     .replace(/{{COMMIT_SHA}}/g, sha)
     .replace(/{{STATUS}}/g, status)
     .replace(/{{MODE}}/g, mode)
@@ -27758,6 +27754,13 @@ You are reviewing ONLY "{{FILE_PATH}}". You cannot see any other files or the br
   fs.writeFileSync(debugPromptPath, prompt, 'utf8');
   core.info(`🔍 Debug prompt saved to: ${debugPromptPath}`);
   core.info(`📝 Prompt template path: ${promptTemplatePath}`);
+  
+  // Save complete prompt to review-results directory for debugging
+  const reviewResultsDir = '.github/review-results';
+  fs.mkdirSync(reviewResultsDir, { recursive: true });
+  const promptDebugPath = `${reviewResultsDir}/PROMPT-${sanitize(filePath)}.md`;
+  fs.writeFileSync(promptDebugPath, prompt, 'utf8');
+  core.info(`📋 Complete prompt saved to: ${promptDebugPath}`);
 
   // Call Gemini
   const body = await callGemini(model, prompt);
@@ -27844,6 +27847,35 @@ You are reviewing ONLY "{{FILE_PATH}}". You cannot see any other files or the br
       results
     };
     fs.writeFileSync('reviews/summary.json', JSON.stringify(summary, null, 2), 'utf8');
+    
+    // Save prompt debugging info to review-results
+    const reviewResultsDir = '.github/review-results';
+    const promptSummaryPath = `${reviewResultsDir}/PROMPT-SUMMARY.md`;
+    const promptSummary = `# AI Review Prompt Summary
+
+Generated on: ${new Date().toISOString()}
+
+## Files Processed: ${processed}/${files.length}
+
+${results.map(r => `- ${r.filePath}: ${r.success ? '✅ Success' : '❌ Failed'}`).join('\n')}
+
+## Debug Files Created
+
+Each processed file has a corresponding prompt debug file:
+${results.map(r => `- \`PROMPT-${sanitize(r.filePath)}.md\` - Complete prompt sent to Gemini CLI`).join('\n')}
+
+## Template Used
+
+Prompt template loaded from: \`${__dirname}/prompt-template.md\`
+
+## Notes
+
+- All prompts are saved in \`.github/review-results/PROMPT-*.md\` files
+- These files contain the exact text sent to Gemini CLI
+- Use these files to debug AI responses and improve the prompt template
+`;
+    fs.writeFileSync(promptSummaryPath, promptSummary, 'utf8');
+    core.info(`📋 Prompt summary saved to: ${promptSummaryPath}`);
 
   } catch (e) {
     core.setFailed(e.message);
