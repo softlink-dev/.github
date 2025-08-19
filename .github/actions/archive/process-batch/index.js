@@ -132,30 +132,36 @@ function buildExcerpts(diff, content, WB, WA, GAP, MAX_WIN){
       }
 
       // Prompt
-      let prompt = `You are a code reviewer. Your task is to review EXACTLY ONE file that has been modified in a pull request.
+      let prompt = `You are a code reviewer analyzing a SINGLE file from a pull request.
 
-IMPORTANT: You can ONLY see the file content and diff provided below. You CANNOT browse the repository or access other files.
+CRITICAL SCOPE LIMITATION:
+- You are reviewing ONLY the file: "${filePath}"
+- You can ONLY see the diff and file content provided below
+- You CANNOT browse the repository, access other files, or see the broader codebase
+- You CANNOT make assumptions about other files or project structure
 
-File to review: ${filePath}
-Commit: ${sha}
-Status: ${status}
-Mode: ${mode}${fileLines ? ' (file lines: '+fileLines+')' : ''}
+File Details:
+- Path: ${filePath}
+- Commit: ${sha}
+- Status: ${status}
+- Mode: ${mode}${fileLines ? ' (file lines: '+fileLines+')' : ''}
 
-CRITICAL INSTRUCTIONS:
-1. Review ONLY the file content and diff provided below
-2. Do NOT mention other files or the broader codebase
-3. Do NOT try to browse or access other files
-4. Focus on code quality, potential bugs, security issues, and best practices
-5. Provide specific, actionable feedback with line references
-6. If you need context from other files, say "Requires cross-file context"
+REVIEW INSTRUCTIONS:
+1. Analyze ONLY the provided diff and file content
+2. Do NOT mention other files, directories, or project structure
+3. Do NOT try to browse or access files outside this scope
+4. If you need context from other files, respond with: "REQUIRES CROSS-FILE CONTEXT"
+5. Focus on the specific code changes and their impact
 
-Your review should cover:
+Review Focus Areas:
 - Code quality and readability
-- Potential bugs or issues
-- Security concerns
-- Performance considerations
-- Best practices adherence
-- Specific suggestions for improvement
+- Potential bugs or logical errors
+- Security vulnerabilities
+- Performance issues
+- Best practices violations
+- Specific, actionable improvement suggestions
+
+IMPORTANT: If you cannot provide a meaningful review with only the provided content, say "REQUIRES CROSS-FILE CONTEXT" instead of making assumptions.
 `;
 
       if (POLICY_FOUND && POLICY_PATH && fs.existsSync(POLICY_PATH)) {
@@ -172,7 +178,7 @@ Your review should cover:
         prompt += `\n(No post-change content included.)\n`;
       }
 
-      prompt += `\n\nREMEMBER: You can ONLY review the file content and diff shown above. Do NOT try to access other files or browse the repository. Focus on the specific code changes and provide actionable feedback.`;
+      prompt += `\n\nFINAL REMINDER: You are reviewing ONLY "${filePath}". You cannot see any other files or the broader codebase. If you need more context, say "REQUIRES CROSS-FILE CONTEXT" instead of making assumptions.`;
 
       // Call Gemini
       const body = await callGemini(model, prompt);

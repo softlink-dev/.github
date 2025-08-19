@@ -1,0 +1,276 @@
+name: Gemini PR Review (Sequential)
+
+on:
+  workflow_call:
+    inputs:
+      model: { type: string, default: gemini-2.5-pro }
+      max_files: { type: string, default: "15" }
+      max_diff_lines: { type: string, default: "4000" }
+      exclude_regex:
+        type: string
+        default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|(\\.github/review-results/)|(\\.lock$)|(\\.min\\.(js|css)$)|(\\.(map|png|jpe?g|gif|svg|pdf|zip|tar|gz|7z|ico)$)"
+      policy_path: { type: string, default: "softlink-dev/.github/.github/review/REVIEW_POLICY.md" }
+      control_repo_ref: { type: string, default: main }
+      full_file_threshold_lines: { type: string, default: "1200" }
+      window_before: { type: string, default: "60" }
+      window_after: { type: string, default: "40" }
+      merge_gap_tolerance: { type: string, default: "10" }
+      max_windowed_lines: { type: string, default: "1200" }
+      max_commits: { type: string, default: "20" }
+      post_mode: { type: string, default: "both" } # artifact_only | commit | both | comment
+      force_review: { type: boolean, default: true }
+      min_lines_threshold: { type: string, default: "15" }
+      
+    secrets:
+      GEMINI_API_KEY: { required: true }
+      PAT_TOKEN: { required: true }
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  precheck:
+    name: decide if review is needed
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      files_changed: ${{ steps.gate.outputs.files_changed }}
+    steps:
+      - id: gate
+        uses:  softlink-dev/.github/.github/actions/precheck@main
+        with:
+          force_review: ${{ inputs.force_review }}
+          min_lines_threshold: ${{ inputs.min_lines_threshold }}
+
+  prepare:
+    name: Build file list
+    needs: precheck
+    if: needs.precheck.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      files_json: ${{ steps.manifest.outputs.files_json }}
+      policy_found: ${{ steps.policy.outputs.found }}
+      policy_scope: ${{ steps.policy.outputs.scope }}
+      policy_path_resolved: ${{ steps.policy.outputs.path }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Checkout org .github control repo
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          ref: ${{ inputs.control_repo_ref }}
+          path: __org_control
+          fetch-depth: 1
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Locate policy
+        id: policy
+        uses: softlink-dev/.github/.github/actions/locate-policy@main
+        with:
+          policy_path: ${{ inputs.policy_path }}
+
+      - name: Generate file list
+        id: manifest
+        uses: softlink-dev/.github/.github/actions/generate-manifest@main
+        with:
+          exclude_regex: ${{ inputs.exclude_regex }}
+          max_files: ${{ inputs.max_files }}
+          max_commits: ${{ inputs.max_commits }}
+
+  review:
+    name: Review Files Sequentially
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (full history for git show)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout org .github control repo (optional)
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          ref: ${{ inputs.control_repo_ref }}
+          path: __org_control
+          fetch-depth: 1
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Gemini CLI (retry)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            if npm install -g @google/gemini-cli; then exit 0; fi
+            echo "npm install failed, retrying ($((3-i)) left)"; sleep 5
+          done
+          exit 1
+
+      - name: Process files sequentially
+        uses: softlink-dev/.github/.github/actions/process-file-sequential@main
+        with:
+          files_json: ${{ needs.prepare.outputs.files_json }}
+          model: ${{ inputs.model }}
+          max_diff_lines: ${{ inputs.max_diff_lines }}
+          full_file_threshold_lines: ${{ inputs.full_file_threshold_lines }}
+          window_before: ${{ inputs.window_before }}
+          window_after: ${{ inputs.window_after }}
+          merge_gap_tolerance: ${{ inputs.merge_gap_tolerance }}
+          max_windowed_lines: ${{ inputs.max_windowed_lines }}
+          policy_found: ${{ needs.prepare.outputs.policy_found }}
+          policy_scope: ${{ needs.prepare.outputs.policy_scope }}
+          policy_path_resolved: ${{ needs.prepare.outputs.policy_path_resolved }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Upload review artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-review-sequential
+          path: reviews/
+          if-no-files-found: warn
+
+  summarize:
+    name: Summarize and publish review
+    needs: [prepare, review]
+    if: ${{ always() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head (for optional commit)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Download review artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-review-sequential
+          path: reviews
+
+      - name: Consolidate reviews
+        uses: softlink-dev/.github/.github/actions/consolidate-reviews@main
+
+      - name: Upload consolidated artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-review-consolidated
+          path: consolidated/
+
+      - name: Commit review results into PR branch (if allowed and requested)
+        if: |
+          github.event_name == 'pull_request' &&
+          (inputs.post_mode == 'commit' || inputs.post_mode == 'both')
+        env:
+          PAT: ${{ secrets.PAT_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          OUT_DIR=".github/review-results"
+          echo "::debug::Creating output directory: $OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          
+          echo "::debug::Copying files from consolidated/ to $OUT_DIR/"
+          cp -r consolidated/* "$OUT_DIR"/
+          
+          echo "::debug::Files created in $OUT_DIR:"
+          ls -la "$OUT_DIR"/
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          current_branch="${{ github.event.pull_request.head.ref || '' }}"
+          retries=3
+          while [ $retries -gt 0 ]; do
+            git remote set-url origin "https://x-access-token:${PAT}@github.com/${{ github.repository }}.git"
+            if [ -n "$current_branch" ]; then
+              git fetch origin "$current_branch" --depth=1 || true
+              git pull --rebase origin "$current_branch" || true
+            fi
+            git add "$OUT_DIR" || true
+            if git commit -m "chore: add AI review results for PR #${{ github.event.pull_request.number }} [skip ci]"; then
+              echo "::debug::Commit successful, attempting push..."
+              if git push; then
+                echo "::debug::Push successful!"
+                echo "Committed and pushed review results"
+                break
+              else
+                echo "::debug::Push failed!"
+              fi
+            else
+              echo "::debug::Commit failed!"
+            fi
+            retries=$((retries - 1))
+            echo "Retrying git ops... ($retries left)"; sleep 5
+          done
+
+      - name: Post review as PR comment
+        if: |
+          github.event_name == 'pull_request' &&
+          (inputs.post_mode == 'commit' || inputs.post_mode == 'both' || inputs.post_mode == 'comment')
+        env:
+          PAT: ${{ secrets.PAT_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          if [ -f "consolidated/DETAILED-REVIEW.md" ]; then
+            # Read the detailed review content
+            REPORT_CONTENT=$(cat consolidated/DETAILED-REVIEW.md)
+            
+            # Truncate if too long (GitHub has limits)
+            MAX_LENGTH=65535
+            if [ ${#REPORT_CONTENT} -gt $MAX_LENGTH ]; then
+              REPORT_CONTENT="${REPORT_CONTENT:0:$((MAX_LENGTH-100))}...\n\n*[Review truncated due to length limits. Full review available in artifacts and committed files.]*"
+            fi
+            
+            # Create comment body
+            COMMENT_BODY="## 🤖 AI Code Review Results
+            
+            $REPORT_CONTENT
+            
+            ---
+            *Review generated by Gemini AI. Full detailed review available in the workflow artifacts.*"
+            
+            # Post comment using GitHub API
+            curl -X POST \
+              -H "Authorization: token $PAT" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"body\":$(echo "$COMMENT_BODY" | jq -Rs .)}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments"
+          else
+            echo "No detailed review found to post as comment"
+          fi
+
+      - name: Note comment-only mode
+        if: |
+          github.event_name == 'pull_request' &&
+          !github.event.pull_request.head.repo.fork &&
+          inputs.post_mode == 'comment'
+        run: echo "::notice::Review posted as PR comment only. Files not committed to repository."
+
+      - name: Note fork fallback / artifact-only
+        if: |
+          github.event_name == 'pull_request' &&
+          ( github.event.pull_request.head.repo.fork ||
+            inputs.post_mode == 'artifact_only' )
+        run: echo "::notice::Results published as artifacts. Commit skipped."

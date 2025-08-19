@@ -64,38 +64,32 @@ jobs:
           echo "::debug::Files created in $OUT_DIR:"
           ls -la "$OUT_DIR"/
           
-          # Reorganize files to use PR number and flatten structure
-          echo "::debug::Reorganizing files to use PR number format with flat structure..."
+          # Create flat structure with PR number
+          echo "::debug::Creating flat structure with PR number..."
           PR_NUMBER="${{ github.event.pull_request.number }}"
           PR_DIR="PR#${PR_NUMBER}"
           
           # Create PR-specific directory
           mkdir -p "$OUT_DIR/$PR_DIR"
           
-                     # Remove commit-specific directories (we only want consolidated files)
-           for commit_dir in "$OUT_DIR"/*/; do
-             if [ -d "$commit_dir" ] && [ "$(basename "$commit_dir")" != "$PR_DIR" ]; then
-               echo "::debug::Removing commit directory: $commit_dir"
-               rm -rf "$commit_dir"
-             fi
-           done
+          # Move and rename files to create flat structure
+          if [ -f "$OUT_DIR/PR-REPORT.md" ]; then
+            echo "::debug::Moving PR-REPORT.md to $OUT_DIR/$PR_DIR/DETAILED-REVIEW.md"
+            mv "$OUT_DIR/PR-REPORT.md" "$OUT_DIR/$PR_DIR/DETAILED-REVIEW.md"
+          fi
           
-                     # Move and rename standalone files to PR directory
-           for file in "$OUT_DIR"/*.md; do
-             if [ -f "$file" ]; then
-               FILENAME=$(basename "$file")
-               if [ "$FILENAME" = "PR-REPORT.md" ]; then
-                 echo "::debug::Moving $file to $OUT_DIR/$PR_DIR/DETAILED-REVIEW.md"
-                 mv "$file" "$OUT_DIR/$PR_DIR/DETAILED-REVIEW.md"
-               elif [ "$FILENAME" = "SUMMARY.md" ]; then
-                 echo "::debug::Moving $file to $OUT_DIR/$PR_DIR/SUMMARY.md"
-                 mv "$file" "$OUT_DIR/$PR_DIR/SUMMARY.md"
-               else
-                 echo "::debug::Moving $file to $OUT_DIR/$PR_DIR/"
-                 mv "$file" "$OUT_DIR/$PR_DIR/"
-               fi
-             fi
-           done
+          if [ -f "$OUT_DIR/SUMMARY.md" ]; then
+            echo "::debug::Moving SUMMARY.md to $OUT_DIR/$PR_DIR/SUMMARY.md"
+            mv "$OUT_DIR/SUMMARY.md" "$OUT_DIR/$PR_DIR/SUMMARY.md"
+          fi
+          
+          # Remove any commit-specific directories (we want flat structure)
+          for commit_dir in "$OUT_DIR"/*/; do
+            if [ -d "$commit_dir" ] && [ "$(basename "$commit_dir")" != "$PR_DIR" ]; then
+              echo "::debug::Removing commit directory: $commit_dir"
+              rm -rf "$commit_dir"
+            fi
+          done
           
           echo "::debug::Final structure in $OUT_DIR:"
           ls -la "$OUT_DIR"/

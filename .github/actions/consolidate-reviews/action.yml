@@ -1,0 +1,96 @@
+name: Consolidate Reviews
+description: Combine individual file reviews into a consolidated detailed review and summary.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        
+        echo "Starting review consolidation..."
+        mkdir -p consolidated
+        
+        # Get PR number for context
+        PR_NUM="${{ github.event.pull_request.number || '' }}"
+        
+        # Create detailed review by combining all file reviews
+        echo "# AI Code Review - Detailed Report ${PR_NUM:+for PR #$PR_NUM}" > consolidated/DETAILED-REVIEW.md
+        echo "" >> consolidated/DETAILED-REVIEW.md
+        echo "*Generated on $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> consolidated/DETAILED-REVIEW.md
+        echo "" >> consolidated/DETAILED-REVIEW.md
+        
+        # Check if we have review files
+        if find reviews -name "*.md" -type f | head -1 >/dev/null 2>&1; then
+          echo "Found review files, consolidating..."
+          
+          # Get summary info
+          if [ -f "reviews/summary.json" ]; then
+            echo "## 📊 Review Summary" >> consolidated/DETAILED-REVIEW.md
+            echo "" >> consolidated/DETAILED-REVIEW.md
+            
+            # Extract summary info from JSON
+            TOTAL=$(jq -r '.total' reviews/summary.json 2>/dev/null || echo "unknown")
+            PROCESSED=$(jq -r '.processed' reviews/summary.json 2>/dev/null || echo "unknown")
+            FAILED=$(jq -r '.failed' reviews/summary.json 2>/dev/null || echo "unknown")
+            
+            echo "- **Total files reviewed:** $TOTAL" >> consolidated/DETAILED-REVIEW.md
+            echo "- **Successfully processed:** $PROCESSED" >> consolidated/DETAILED-REVIEW.md
+            echo "- **Failed:** $FAILED" >> consolidated/DETAILED-REVIEW.md
+            echo "" >> consolidated/DETAILED-REVIEW.md
+          fi
+          
+          # Combine all file reviews
+          echo "## 📝 File Reviews" >> consolidated/DETAILED-REVIEW.md
+          echo "" >> consolidated/DETAILED-REVIEW.md
+          
+          # Process each review file
+          for review_file in $(find reviews -name "*.md" -type f | grep -v summary.json | sort); do
+            if [ -f "$review_file" ]; then
+              echo "Processing: $review_file"
+              cat "$review_file" >> consolidated/DETAILED-REVIEW.md
+              echo "" >> consolidated/DETAILED-REVIEW.md
+            fi
+          done
+          
+          # Create summary
+          echo "# AI Code Review - Summary ${PR_NUM:+for PR #$PR_NUM}" > consolidated/SUMMARY.md
+          echo "" >> consolidated/SUMMARY.md
+          echo "*Generated on $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> consolidated/SUMMARY.md
+          echo "" >> consolidated/SUMMARY.md
+          
+          if [ -f "reviews/summary.json" ]; then
+            echo "## 📊 Review Statistics" >> consolidated/SUMMARY.md
+            echo "" >> consolidated/SUMMARY.md
+            echo "- **Total files:** $TOTAL" >> consolidated/SUMMARY.md
+            echo "- **Successfully reviewed:** $PROCESSED" >> consolidated/SUMMARY.md
+            echo "- **Failed:** $FAILED" >> consolidated/SUMMARY.md
+            echo "" >> consolidated/SUMMARY.md
+          fi
+          
+          echo "## 📋 Reviewed Files" >> consolidated/SUMMARY.md
+          echo "" >> consolidated/SUMMARY.md
+          
+          # List all reviewed files
+          for review_file in $(find reviews -name "*.md" -type f | grep -v summary.json | sort); do
+            if [ -f "$review_file" ]; then
+              filename=$(basename "$review_file" .md)
+              # Convert sanitized filename back to original path (approximate)
+              original_path=$(echo "$filename" | sed 's/_/\//g' | sed 's/^\.\///')
+              echo "- $original_path" >> consolidated/SUMMARY.md
+            fi
+          done
+          
+          echo "" >> consolidated/SUMMARY.md
+          echo "---" >> consolidated/SUMMARY.md
+          echo "*For detailed review comments, see the full detailed review.*" >> consolidated/SUMMARY.md
+          
+        else
+          echo "No review files found." >> consolidated/DETAILED-REVIEW.md
+          echo "No review files found." >> consolidated/SUMMARY.md
+        fi
+        
+        echo "Consolidation complete!"
+        echo "Files created:"
+        echo "- consolidated/DETAILED-REVIEW.md"
+        echo "- consolidated/SUMMARY.md"

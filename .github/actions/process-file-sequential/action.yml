@@ -1,0 +1,19 @@
+name: Process File Sequential
+description: Process files one by one sequentially, generating individual reviews for each file.
+
+inputs:
+  files_json: { description: "JSON array of files to review", required: true }
+  model: { description: "Gemini model name", required: true }
+  max_diff_lines: { required: true }
+  full_file_threshold_lines: { required: true }
+  window_before: { required: true }
+  window_after: { required: true }
+  merge_gap_tolerance: { required: true }
+  max_windowed_lines: { required: true }
+  policy_found: { required: false, default: "false" }
+  policy_scope: { required: false, default: "" }
+  policy_path: { required: false, default: "" }
+
+runs:
+  using: node20
+  main: dist/index.js

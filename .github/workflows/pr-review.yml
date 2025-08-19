@@ -1,0 +1,43 @@
+# .github/workflows/pr-review.yml
+name: Gemini PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths-ignore:
+      - '.github/review-results/**'
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  review:
+    uses: softlink-dev/.github/.github/workflows/gemini-pr-review-sequential.yml@main
+    secrets: inherit
+    with:
+      model: gemini-2.5-pro
+      max_files: '10'
+      max_diff_lines: '3000'
+      max_commits: '10'
+      full_file_threshold_lines: '800'
+      window_before: '40'
+      window_after: '30'
+      merge_gap_tolerance: '10'
+      max_windowed_lines: '800'
+      post_mode: 'both'
+      exclude_regex: >-
+        (^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor|\.next|\.nuxt|public|static)/
+        |\.lock$|\.min\.(js|css)$|\.map$|\.png$|\.jpe?g$|\.gif$|\.svg$|\.pdf$
+        |\.zip$|\.tar$|\.gz$|\.7z$|\.ico$|\.bmp$|\.dll$|\.exe$|\.pdb$
+        |package-lock\.json$|yarn\.lock$|Cargo\.lock$|\.generated\.
+      policy_path: '.github/review/REVIEW_POLICY.md'
+      control_repo_ref: 'main'
+      force_review: true
+      min_lines_threshold: '2'
