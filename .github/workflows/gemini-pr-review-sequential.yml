@@ -92,6 +92,7 @@ jobs:
   review:
     name: Review Files Sequentially
     needs: prepare
+    if: needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo (full history for git show)
@@ -123,6 +124,14 @@ jobs:
             echo "npm install failed, retrying ($((3-i)) left)"; sleep 5
           done
           exit 1
+
+      - name: Debug prepare outputs
+        run: |
+          echo "::debug::Prepare job result: ${{ needs.prepare.result }}"
+          echo "::debug::Files JSON output: ${{ needs.prepare.outputs.files_json }}"
+          echo "::debug::Policy found: ${{ needs.prepare.outputs.policy_found }}"
+          echo "::debug::Policy scope: ${{ needs.prepare.outputs.policy_scope }}"
+          echo "::debug::Policy path: ${{ needs.prepare.outputs.policy_path_resolved }}"
 
       - name: Process files sequentially
         uses: softlink-dev/.github/.github/actions/process-file-sequential@main
