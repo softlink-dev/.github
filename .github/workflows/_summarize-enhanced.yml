@@ -30,7 +30,7 @@ jobs:
         with:
           path: ./
           pattern: review-batch-*
-          merge-multiple: true
+          merge-multiple: false
 
       - name: Consolidate reviews
         uses: softlink-dev/.github/.github/actions/consolidate-batches@main

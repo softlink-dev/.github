@@ -35,6 +35,14 @@ runs:
         # Get PR number for context
         PR_NUM="${{ github.event.pull_request.number || '' }}"
         
+        # Debug: List current directory contents
+        echo "Current directory contents:"
+        ls -la
+        
+        # Debug: Check for batch artifacts
+        echo "Looking for review-batch-* patterns:"
+        ls review-batch-* 2>/dev/null || echo "No review-batch-* found"
+        
         # Create detailed review by combining all batch results
         echo "# AI Code Review - Detailed Report ${PR_NUM:+for PR #$PR_NUM}" > consolidate_review.md
         echo "" >> consolidate_review.md
@@ -42,7 +50,7 @@ runs:
         echo "" >> consolidate_review.md
         
         # Check if we have batch artifacts
-        if [ -d "review-batch-*" ]; then
+        if ls review-batch-* 1> /dev/null 2>&1; then
           echo "Found batch results, consolidating individual reviews..."
           
           echo "## 📊 Review Summary" >> consolidate_review.md
