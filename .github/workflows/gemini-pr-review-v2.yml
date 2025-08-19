@@ -17,7 +17,7 @@ on:
       merge_gap_tolerance: { type: string, default: "10" }
       max_windowed_lines: { type: string, default: "1200" }
       max_commits: { type: string, default: "20" }
-      post_mode: { type: string, default: "artifact_only" } # artifact_only | commit | both | comment
+      post_mode: { type: string, default: "both" } # artifact_only | commit | both | comment
       batch_size: { type: string, default: "3" }
       max_parallel_batches: { type: string, default: "2" }
       force_review: { type: boolean, default: true }
