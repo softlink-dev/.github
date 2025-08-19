@@ -1,29 +1,29 @@
 name: Consolidate Reviews
 description: Combine individual file reviews into a consolidated detailed review and summary.
 
-  runs:
-    using: composite
-    steps:
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
 
-      - name: Install Gemini CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          for i in 1 2 3; do
-            if npm install -g @google/gemini-cli; then exit 0; fi
-            echo "npm install failed, retrying ($((3-i)) left)"; sleep 5
-          done
-          exit 1
+    - name: Install Gemini CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+        for i in 1 2 3; do
+          if npm install -g @google/gemini-cli; then exit 0; fi
+          echo "npm install failed, retrying ($((3-i)) left)"; sleep 5
+        done
+        exit 1
 
-      - shell: bash
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          set -euo pipefail
+    - shell: bash
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      run: |
+        set -euo pipefail
         
         echo "Starting review consolidation..."
         mkdir -p consolidated
@@ -70,18 +70,18 @@ description: Combine individual file reviews into a consolidated detailed review
             fi
           done
           
-                                # Create detailed review first
-                      DETAILED_REVIEW_FILE="consolidated/DETAILED-REVIEW.md"
-                      
-                      # Create AI-generated summary using Gemini CLI
-                      echo "Generating AI summary of the review..."
-                      
-                      # Load summary prompt template
-                      SUMMARY_TEMPLATE_PATH="$(dirname "$0")/summary-prompt.md"
-                      if [ -f "$SUMMARY_TEMPLATE_PATH" ]; then
-                        SUMMARY_TEMPLATE=$(cat "$SUMMARY_TEMPLATE_PATH")
-                      else
-                        SUMMARY_TEMPLATE="You are a technical writer tasked with creating a concise summary of a code review.
+          # Create detailed review first
+          DETAILED_REVIEW_FILE="consolidated/DETAILED-REVIEW.md"
+          
+          # Create AI-generated summary using Gemini CLI
+          echo "Generating AI summary of the review..."
+          
+          # Load summary prompt template
+          SUMMARY_TEMPLATE_PATH="$(dirname "$0")/summary-prompt.md"
+          if [ -f "$SUMMARY_TEMPLATE_PATH" ]; then
+            SUMMARY_TEMPLATE=$(cat "$SUMMARY_TEMPLATE_PATH")
+          else
+            SUMMARY_TEMPLATE="You are a technical writer tasked with creating a concise summary of a code review.
 
 ## TASK
 Summarize the following code review in under 500 words. Focus on the most important findings and actionable recommendations.
@@ -104,50 +104,50 @@ Summarize the following code review in under 500 words. Focus on the most import
 {{REVIEW_CONTENT}}
 
 ## SUMMARY (under 500 words):"
-                      fi
-                      
-                      # Replace template variable with actual review content
-                      SUMMARY_PROMPT=$(echo "$SUMMARY_TEMPLATE" | sed "s|{{REVIEW_CONTENT}}|$(cat "$DETAILED_REVIEW_FILE")|g")
+          fi
+          
+          # Replace template variable with actual review content
+          SUMMARY_PROMPT=$(echo "$SUMMARY_TEMPLATE" | sed "s|{{REVIEW_CONTENT}}|$(cat "$DETAILED_REVIEW_FILE")|g")
 
-                      # Create summary using Gemini CLI
-                      SUMMARY_CONTENT=$(echo "$SUMMARY_PROMPT" | gemini --model gemini-2.5-pro --prompt - 2>/dev/null || echo "Summary generation failed")
-                      
-                      # Create summary file
-                      echo "# AI Code Review - Summary ${PR_NUM:+for PR #$PR_NUM}" > consolidated/SUMMARY.md
-                      echo "" >> consolidated/SUMMARY.md
-                      echo "*Generated on $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> consolidated/SUMMARY.md
-                      echo "" >> consolidated/SUMMARY.md
+          # Create summary using Gemini CLI
+          SUMMARY_CONTENT=$(echo "$SUMMARY_PROMPT" | gemini --model gemini-2.5-pro --prompt - 2>/dev/null || echo "Summary generation failed")
+          
+          # Create summary file
+          echo "# AI Code Review - Summary ${PR_NUM:+for PR #$PR_NUM}" > consolidated/SUMMARY.md
+          echo "" >> consolidated/SUMMARY.md
+          echo "*Generated on $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> consolidated/SUMMARY.md
+          echo "" >> consolidated/SUMMARY.md
 
-                      if [ -f "reviews/summary.json" ]; then
-                        echo "## 📊 Review Statistics" >> consolidated/SUMMARY.md
-                        echo "" >> consolidated/SUMMARY.md
-                        echo "- **Total files:** $TOTAL" >> consolidated/SUMMARY.md
-                        echo "- **Successfully reviewed:** $PROCESSED" >> consolidated/SUMMARY.md
-                        echo "- **Failed:** $FAILED" >> consolidated/SUMMARY.md
-                        echo "" >> consolidated/SUMMARY.md
-                      fi
+          if [ -f "reviews/summary.json" ]; then
+            echo "## 📊 Review Statistics" >> consolidated/SUMMARY.md
+            echo "" >> consolidated/SUMMARY.md
+            echo "- **Total files:** $TOTAL" >> consolidated/SUMMARY.md
+            echo "- **Successfully reviewed:** $PROCESSED" >> consolidated/SUMMARY.md
+            echo "- **Failed:** $FAILED" >> consolidated/SUMMARY.md
+            echo "" >> consolidated/SUMMARY.md
+          fi
 
-                      echo "## 🎯 Executive Summary" >> consolidated/SUMMARY.md
-                      echo "" >> consolidated/SUMMARY.md
-                      echo "$SUMMARY_CONTENT" >> consolidated/SUMMARY.md
-                      echo "" >> consolidated/SUMMARY.md
+          echo "## 🎯 Executive Summary" >> consolidated/SUMMARY.md
+          echo "" >> consolidated/SUMMARY.md
+          echo "$SUMMARY_CONTENT" >> consolidated/SUMMARY.md
+          echo "" >> consolidated/SUMMARY.md
 
-                      echo "## 📋 All Reviewed Files" >> consolidated/SUMMARY.md
-                      echo "" >> consolidated/SUMMARY.md
+          echo "## 📋 All Reviewed Files" >> consolidated/SUMMARY.md
+          echo "" >> consolidated/SUMMARY.md
 
-                      # List all reviewed files
-                      for review_file in $(find reviews -name "*.md" -type f | grep -v summary.json | sort); do
-                        if [ -f "$review_file" ]; then
-                          filename=$(basename "$review_file" .md)
-                          # Convert sanitized filename back to original path (approximate)
-                          original_path=$(echo "$filename" | sed 's/_/\//g' | sed 's/^\.\///')
-                          echo "- $original_path" >> consolidated/SUMMARY.md
-                        fi
-                      done
+          # List all reviewed files
+          for review_file in $(find reviews -name "*.md" -type f | grep -v summary.json | sort); do
+            if [ -f "$review_file" ]; then
+              filename=$(basename "$review_file" .md)
+              # Convert sanitized filename back to original path (approximate)
+              original_path=$(echo "$filename" | sed 's/_/\//g' | sed 's/^\.\///')
+              echo "- $original_path" >> consolidated/SUMMARY.md
+            fi
+          done
 
-                      echo "" >> consolidated/SUMMARY.md
-                      echo "---" >> consolidated/SUMMARY.md
-                      echo "*For detailed review comments and specific recommendations, see the full detailed review.*" >> consolidated/SUMMARY.md
+          echo "" >> consolidated/SUMMARY.md
+          echo "---" >> consolidated/SUMMARY.md
+          echo "*For detailed review comments and specific recommendations, see the full detailed review.*" >> consolidated/SUMMARY.md
           
         else
           echo "No review files found." >> consolidated/DETAILED-REVIEW.md
