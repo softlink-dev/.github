@@ -1,0 +1,16 @@
+{
+  "name": "process-batch-enhanced",
+  "version": "1.0.0",
+  "description": "Enhanced batch processing action for AI code reviews",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "ncc build index.js -o dist",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@actions/core": "^1.10.0"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.0"
+  }
+}

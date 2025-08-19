@@ -1,0 +1,188 @@
+name: Gemini PR Review - Parallel
+
+on:
+  workflow_call:
+    inputs:
+      post_mode:
+        type: string
+        required: false
+        default: 'both'
+        description: 'How to publish results: artifact_only, commit, both, comment'
+      exclude_regex:
+        type: string
+        required: false
+        default: '(\.github/review-results/.*)'
+        description: 'Regex pattern to exclude files from review'
+      max_files:
+        type: string
+        required: false
+        default: '50'
+        description: 'Maximum number of files to review'
+      max_commits:
+        type: string
+        required: false
+        default: '10'
+        description: 'Maximum number of commits to analyze'
+      model:
+        type: string
+        required: false
+        default: 'gemini-2.5-pro'
+        description: 'Gemini model to use for review'
+      max_diff_lines:
+        type: string
+        required: false
+        default: '3000'
+        description: 'Maximum diff lines to include in prompt'
+      full_file_threshold_lines:
+        type: string
+        required: false
+        default: '800'
+        description: 'File size threshold for full vs windowed content'
+      window_before:
+        type: string
+        required: false
+        default: '40'
+        description: 'Lines before diff to include in windowed content'
+      window_after:
+        type: string
+        required: false
+        default: '30'
+        description: 'Lines after diff to include in windowed content'
+      merge_gap_tolerance:
+        type: string
+        required: false
+        default: '10'
+        description: 'Gap tolerance for merging diff hunks'
+      max_windowed_lines:
+        type: string
+        required: false
+        default: '800'
+        description: 'Maximum lines in windowed content'
+      policy_path:
+        type: string
+        required: false
+        default: '.github/review/REVIEW_POLICY.md'
+        description: 'Path to review policy file'
+      control_repo_ref:
+        type: string
+        required: false
+        default: 'main'
+        description: 'Branch/tag of .github control repo to use'
+      batch_size:
+        type: string
+        required: false
+        default: '5'
+        description: 'Number of files per batch'
+      max_parallel_batches:
+        type: string
+        required: false
+        default: '3'
+        description: 'Maximum parallel batches to run'
+    secrets:
+      GEMINI_API_KEY:
+        required: true
+      PAT_TOKEN:
+        required: true
+
+jobs:
+  precheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Precheck
+        uses: softlink-dev/.github/.github/actions/precheck@main
+        with:
+          post_mode: ${{ inputs.post_mode }}
+
+  prepare:
+    needs: precheck
+    runs-on: ubuntu-latest
+    outputs:
+      batches: ${{ steps.batch.outputs.batches }}
+      policy_found: ${{ steps.policy.outputs.found }}
+      policy_scope: ${{ steps.policy.outputs.scope }}
+      policy_path_resolved: ${{ steps.policy.outputs.path }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Checkout org .github control repo
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          ref: ${{ inputs.control_repo_ref }}
+          path: __org_control
+          fetch-depth: 1
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Locate policy
+        id: policy
+        uses: softlink-dev/.github/.github/actions/locate-policy@main
+        with:
+          policy_path: ${{ inputs.policy_path }}
+
+      - name: Generate manifest
+        id: manifest
+        uses: softlink-dev/.github/.github/actions/generate-manifest@main
+        with:
+          exclude_regex: ${{ inputs.exclude_regex }}
+          max_files: ${{ inputs.max_files }}
+          max_commits: ${{ inputs.max_commits }}
+
+      - name: Create batches
+        id: batch
+        uses: softlink-dev/.github/.github/actions/create-batches@main
+        with:
+          items_json: ${{ steps.manifest.outputs.items }}
+          batch_size: ${{ inputs.batch_size }}
+          max_parallel_batches: ${{ inputs.max_parallel_batches }}
+
+      - name: Upload batches artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-batches
+          path: ${{ runner.temp }}/batches.json
+
+  review:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        batch: ${{ fromJson(needs.prepare.outputs.batches) }}
+      fail-fast: false
+    steps:
+      - name: Process batch
+        uses: softlink-dev/.github/.github/workflows/_review-batch-enhanced@main
+        with:
+          batch_json: ${{ toJson(matrix.batch) }}
+          model: ${{ inputs.model }}
+          max_diff_lines: ${{ inputs.max_diff_lines }}
+          full_file_threshold_lines: ${{ inputs.full_file_threshold_lines }}
+          window_before: ${{ inputs.window_before }}
+          window_after: ${{ inputs.window_after }}
+          merge_gap_tolerance: ${{ inputs.merge_gap_tolerance }}
+          max_windowed_lines: ${{ inputs.max_windowed_lines }}
+          policy_found: ${{ needs.prepare.outputs.policy_found }}
+          policy_scope: ${{ needs.prepare.outputs.policy_scope }}
+          policy_path: ${{ needs.prepare.outputs.policy_path_resolved }}
+          control_repo_ref: ${{ inputs.control_repo_ref }}
+        secrets:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+
+  summarize:
+    needs: [prepare, review]
+    runs-on: ubuntu-latest
+    if: always() && needs.prepare.result == 'success'
+    steps:
+      - name: Summarize and publish review
+        uses: softlink-dev/.github/.github/workflows/_summarize-enhanced@main
+        with:
+          post_mode: ${{ inputs.post_mode }}
+          control_repo_ref: ${{ inputs.control_repo_ref }}
+        secrets:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

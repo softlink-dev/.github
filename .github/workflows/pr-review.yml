@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   review:
-    uses: softlink-dev/.github/.github/workflows/gemini-pr-review-sequential.yml@main
+    uses: softlink-dev/.github/.github/workflows/gemini-pr-review-parallel.yml@main
     secrets: inherit
     with:
       model: gemini-2.5-pro
@@ -39,5 +39,6 @@ jobs:
         |package-lock\.json$|yarn\.lock$|Cargo\.lock$|\.generated\.
       policy_path: '.github/review/REVIEW_POLICY.md'
       control_repo_ref: 'main'
-      force_review: true
-      min_lines_threshold: '2'
+      # Batch configuration for parallel processing
+      batch_size: '5'
+      max_parallel_batches: '3'

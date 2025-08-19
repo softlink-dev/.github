@@ -1,0 +1,19 @@
+name: Process Batch Enhanced
+description: Process a batch of files in parallel with enhanced AI prompts and debugging capabilities.
+
+inputs:
+  batch_json: { description: "Matrix batch JSON { id, items[] }", required: true }
+  model: { description: "Gemini model name", required: true }
+  max_diff_lines: { required: true }
+  full_file_threshold_lines: { required: true }
+  window_before: { required: true }
+  window_after: { required: true }
+  merge_gap_tolerance: { required: true }
+  max_windowed_lines: { required: true }
+  policy_found: { required: false, default: "false" }
+  policy_scope: { required: false, default: "" }
+  policy_path: { required: false, default: "" }
+
+runs:
+  using: node20
+  main: dist/index.js
