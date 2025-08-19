@@ -36,16 +36,33 @@ jobs:
       - name: Commit review results into PR branch (if allowed and requested)
         if: |
           github.event_name == 'pull_request' &&
-          !github.event.pull_request.head.repo.fork &&
           (inputs.post_mode == 'commit' || inputs.post_mode == 'both')
         env:
           PAT: ${{ secrets.PAT_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
+          
+          # Debug: Log the current state
+          echo "::debug::Starting commit step"
+          echo "::debug::Event name: ${{ github.event_name }}"
+          echo "::debug::Post mode: ${{ inputs.post_mode }}"
+          echo "::debug::PR number: ${{ github.event.pull_request.number }}"
+          echo "::debug::PR head ref: ${{ github.event.pull_request.head.ref }}"
+          echo "::debug::Is fork: ${{ github.event.pull_request.head.repo.fork }}"
+          
           OUT_DIR=".github/review-results"
+          echo "::debug::Creating output directory: $OUT_DIR"
           mkdir -p "$OUT_DIR"
+          
+          echo "::debug::Checking if compiled directory exists and has content"
+          ls -la compiled/ || echo "::debug::compiled directory not found or empty"
+          
+          echo "::debug::Copying files from compiled/ to $OUT_DIR/"
           cp -r compiled/* "$OUT_DIR"/
+          
+          echo "::debug::Files created in $OUT_DIR:"
+          ls -la "$OUT_DIR"/
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
