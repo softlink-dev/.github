@@ -27739,9 +27739,13 @@ You are reviewing ONLY "{{FILE_PATH}}". You cannot see any other files or the br
     fileContentSection += `\n\n## REVIEW POLICY (${POLICY_SCOPE})\n\`\`\`\n${fs.readFileSync(POLICY_PATH,'utf8')}\n\`\`\``;
   }
 
+  // Build GitHub URL for the file
+  const githubUrl = `https://github.com/${process.env.GITHUB_REPOSITORY}/blob/${sha}/${filePath}`;
+  
   // Replace template variables
   let prompt = promptTemplate
     .replace(/{{FILE_PATH}}/g, filePath)
+    .replace(/{{GITHUB_URL}}/g, githubUrl)
     .replace(/{{COMMIT_SHA}}/g, sha)
     .replace(/{{STATUS}}/g, status)
     .replace(/{{MODE}}/g, mode)
@@ -27798,6 +27802,12 @@ You are reviewing ONLY "{{FILE_PATH}}". You cannot see any other files or the br
     let failed = 0;
 
     for (const item of files) {
+      // Skip review result files
+      if (item.path.includes('.github/review-results/')) {
+        core.info(`⏭️ Skipping review result file: ${item.path}`);
+        continue;
+      }
+      
       try {
         const result = await processFile(
           item, model, MAX_DIFF, FULL_FILE, WB, WA, GAP, MAX_WIN, 

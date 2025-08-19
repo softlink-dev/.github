@@ -8,7 +8,7 @@ on:
       max_diff_lines: { type: string, default: "4000" }
       exclude_regex:
         type: string
-        default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|(\\.github/review-results/)|(\\.lock$)|(\\.min\\.(js|css)$)|(\\.(map|png|jpe?g|gif|svg|pdf|zip|tar|gz|7z|ico)$)"
+        default: "(^|/)(dist|build|node_modules|coverage|out|bin|obj|target|vendor)/|(\\.github/review-results/.*)|(\\.lock$)|(\\.min\\.(js|css)$)|(\\.(map|png|jpe?g|gif|svg|pdf|zip|tar|gz|7z|ico)$)"
       policy_path: { type: string, default: "softlink-dev/.github/.github/review/REVIEW_POLICY.md" }
       control_repo_ref: { type: string, default: main }
       full_file_threshold_lines: { type: string, default: "1200" }
