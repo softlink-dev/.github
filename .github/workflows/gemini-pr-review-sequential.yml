@@ -126,12 +126,13 @@ jobs:
           exit 1
 
       - name: Debug prepare outputs
+        shell: bash
         run: |
-          echo "::debug::Prepare job result: ${{ needs.prepare.result }}"
-          echo "::debug::Files JSON output: ${{ needs.prepare.outputs.files_json }}"
-          echo "::debug::Policy found: ${{ needs.prepare.outputs.policy_found }}"
-          echo "::debug::Policy scope: ${{ needs.prepare.outputs.policy_scope }}"
-          echo "::debug::Policy path: ${{ needs.prepare.outputs.policy_path_resolved }}"
+          echo "Debug: Prepare job result is ${{ needs.prepare.result }}"
+          echo "Debug: Files JSON output length is ${{ length(needs.prepare.outputs.files_json) }}"
+          echo "Debug: Policy found is ${{ needs.prepare.outputs.policy_found }}"
+          echo "Debug: Policy scope is ${{ needs.prepare.outputs.policy_scope }}"
+          echo "Debug: Policy path is ${{ needs.prepare.outputs.policy_path_resolved }}"
 
       - name: Process files sequentially
         uses: softlink-dev/.github/.github/actions/process-file-sequential@main
