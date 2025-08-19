@@ -95,5 +95,5 @@ jobs:
     if: ${{ always() && needs.prepare.result == 'success' }}
     uses: softlink-dev/.github/.github/workflows/_summarize.yml@main
     with:
-      post_mode: ${{ inputs.post_mode }}
+      post_mode: "both"  # TEMPORARILY HARDCODED - IGNORES INPUT VALUE
     secrets: inherit
