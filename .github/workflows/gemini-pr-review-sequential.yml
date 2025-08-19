@@ -167,6 +167,8 @@ jobs:
 
       - name: Consolidate reviews
         uses: softlink-dev/.github/.github/actions/consolidate-reviews@main
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
       - name: Upload consolidated artifacts
         uses: actions/upload-artifact@v4

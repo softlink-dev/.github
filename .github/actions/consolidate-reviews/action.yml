@@ -1,6 +1,11 @@
 name: Consolidate Reviews
 description: Combine individual file reviews into a consolidated detailed review and summary.
 
+inputs:
+  gemini_api_key:
+    description: 'Gemini API key for generating summaries'
+    required: true
+
 runs:
   using: composite
   steps:
@@ -21,7 +26,7 @@ runs:
 
     - shell: bash
       env:
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
       run: |
         set -euo pipefail
         
