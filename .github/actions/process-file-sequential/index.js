@@ -115,6 +115,8 @@ CRITICAL SCOPE LIMITATION:
 - You can ONLY see the diff and file content provided below
 - You CANNOT browse the repository, access other files, or see the broader codebase
 - You CANNOT make assumptions about other files or project structure
+- You CANNOT list files, explore directories, or navigate the codebase
+- You CANNOT say "I will continue listing files" or similar phrases
 
 File Details:
 - Path: ${filePath}
@@ -126,8 +128,9 @@ REVIEW INSTRUCTIONS:
 1. Analyze ONLY the provided diff and file content
 2. Do NOT mention other files, directories, or project structure
 3. Do NOT try to browse or access files outside this scope
-4. If you need context from other files, respond with: "REQUIRES CROSS-FILE CONTEXT"
-5. Focus on the specific code changes and their impact
+4. Do NOT attempt to list files or explore the repository
+5. If you need context from other files, respond with: "REQUIRES CROSS-FILE CONTEXT"
+6. Focus on the specific code changes and their impact
 
 Review Focus Areas:
 - Code quality and readability
@@ -137,7 +140,7 @@ Review Focus Areas:
 - Best practices violations
 - Specific, actionable improvement suggestions
 
-IMPORTANT: If you cannot provide a meaningful review with only the provided content, say "REQUIRES CROSS-FILE CONTEXT" instead of making assumptions.
+CRITICAL: You are reviewing ONLY "${filePath}". You cannot see any other files. If you cannot provide a meaningful review with only the provided content, say "REQUIRES CROSS-FILE CONTEXT" instead of making assumptions or trying to browse the repository.
 `;
 
   if (POLICY_FOUND && POLICY_PATH && fs.existsSync(POLICY_PATH)) {
@@ -154,7 +157,7 @@ IMPORTANT: If you cannot provide a meaningful review with only the provided cont
     prompt += `\n(No post-change content included.)\n`;
   }
 
-  prompt += `\n\nFINAL REMINDER: You are reviewing ONLY "${filePath}". You cannot see any other files or the broader codebase. If you need more context, say "REQUIRES CROSS-FILE CONTEXT" instead of making assumptions.`;
+  prompt += `\n\nFINAL REMINDER: You are reviewing ONLY "${filePath}". You cannot see any other files or the broader codebase. Do NOT try to list files, explore directories, or navigate the repository. If you need more context, say "REQUIRES CROSS-FILE CONTEXT" instead of making assumptions.`;
 
   // Call Gemini
   const body = await callGemini(model, prompt);

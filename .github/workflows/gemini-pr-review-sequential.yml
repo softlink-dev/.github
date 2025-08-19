@@ -25,14 +25,14 @@ on:
       GEMINI_API_KEY: { required: true }
       PAT_TOKEN: { required: true }
 
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
   actions: write
-
-concurrency:
-  group: pr-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
 
 jobs:
   precheck:
