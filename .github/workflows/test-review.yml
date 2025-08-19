@@ -11,6 +11,7 @@ on:
         options:
         - artifact_only
         - commit
+        - comment
         - both
 
 jobs:
