@@ -59,11 +59,16 @@ jobs:
           echo "::debug::Creating output directory: $OUT_DIR"
           mkdir -p "$OUT_DIR"
 
-          echo "::debug::Checking if consolidated directory exists and has content"
-          ls -la consolidated/ || echo "::debug::consolidated directory not found or empty"
+          echo "::debug::Checking if consolidate files exist"
+          ls -la consolidate_*.md || echo "::debug::consolidate files not found"
 
-          echo "::debug::Copying files from consolidated/ to $OUT_DIR/"
-          cp -r consolidated/* "$OUT_DIR"/
+          echo "::debug::Copying consolidate files to $OUT_DIR/"
+          if [ -f "consolidate_review.md" ]; then
+            cp consolidate_review.md "$OUT_DIR/DETAILED-REVIEW.md"
+          fi
+          if [ -f "consolidate_summary.md" ]; then
+            cp consolidate_summary.md "$OUT_DIR/SUMMARY.md"
+          fi
 
           echo "::debug::Files created in $OUT_DIR:"
           ls -la "$OUT_DIR"/
@@ -126,8 +131,8 @@ jobs:
           set -euo pipefail
 
           # Check if detailed review exists and determine what to post
-          if [ -f "consolidated/DETAILED-REVIEW.md" ]; then
-            DETAILED_CONTENT=$(cat consolidated/DETAILED-REVIEW.md)
+          if [ -f "consolidate_review.md" ]; then
+            DETAILED_CONTENT=$(cat consolidate_review.md)
             DETAILED_LENGTH=${#DETAILED_CONTENT}
             
             # GitHub comment limit is 65535 characters
@@ -136,8 +141,8 @@ jobs:
             if [ $DETAILED_LENGTH -gt $MAX_LENGTH ]; then
               echo "Detailed review is too long ($DETAILED_LENGTH chars), using summary instead"
               
-              if [ -f "consolidated/SUMMARY.md" ]; then
-                SUMMARY_CONTENT=$(cat consolidated/SUMMARY.md)
+              if [ -f "consolidate_summary.md" ]; then
+                SUMMARY_CONTENT=$(cat consolidate_summary.md)
                 COMMENT_BODY="## 🤖 AI Code Review Results (Summary)
 
                 $SUMMARY_CONTENT
