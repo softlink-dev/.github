@@ -1,0 +1,101 @@
+name: Create Batches
+description: Pack manifest items into batches while respecting matrix limits and max parallelism.
+
+inputs:
+  items_json:
+    description: "JSON array from generate-manifest"
+    required: true
+  batch_size:
+    description: "Desired items per batch"
+    required: true
+  max_parallel_batches:
+    description: "Upper bound on simultaneous batches"
+    required: true
+
+outputs:
+  batches:
+    description: "JSON array of { id, items[] }"
+    value: ${{ steps.pack.outputs.batches }}
+
+runs:
+  using: composite
+  steps:
+    - id: pack
+      shell: bash
+      env:
+        ITEMS_JSON: ${{ inputs.items_json }}
+        BATCH_SIZE: ${{ inputs.batch_size }}
+        MAX_PARALLEL_BATCHES: ${{ inputs.max_parallel_batches }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${ITEMS_JSON:-}" ] || [ "${ITEMS_JSON}" = "null" ]; then
+          echo "::error::items_json is empty/null"
+          exit 1
+        fi
+
+        # Constants
+        MAX_MATRIX_CONFIGS=250
+
+        # Normalize numeric inputs
+        batch_size="${BATCH_SIZE:-3}"
+        max_parallel="${MAX_PARALLEL_BATCHES:-2}"
+        case "$batch_size" in (''|*[!0-9]*) batch_size=3;; esac
+        case "$max_parallel" in (''|*[!0-9]*) max_parallel=2;; esac
+
+        # Write items to a tmp file and count
+        items_file="$(mktemp)"
+        printf '%s' "${ITEMS_JSON}" > "${items_file}"
+
+        # Quick validation
+        if ! jq -e 'type=="array"' "${items_file}" >/dev/null 2>&1; then
+          echo "::error::items_json must be a JSON array"
+          cat "${items_file}"
+          exit 1
+        fi
+
+        item_count="$(jq 'length' "${items_file}")"
+        echo "::notice::Creating batches for ${item_count} items (requested batch_size=${batch_size}, max_parallel=${max_parallel})"
+
+        # Compute estimated batches; adjust to stay within limits
+        estimated_batches=$(( (item_count + batch_size - 1) / batch_size ))
+        if [ "${estimated_batches}" -gt "${MAX_MATRIX_CONFIGS}" ]; then
+          batch_size=$(( (item_count + MAX_MATRIX_CONFIGS - 1) / MAX_MATRIX_CONFIGS ))
+          estimated_batches=$(( (item_count + batch_size - 1) / batch_size ))
+          echo "::notice::Adjusted batch_size to ${batch_size} to honor matrix limit (${estimated_batches} batches)"
+        fi
+
+        # Respect max_parallel as an upper bound when it's > 0
+        if [ "${max_parallel}" -gt 0 ] && [ "${estimated_batches}" -gt "${max_parallel}" ]; then
+          batch_size=$(( (item_count + max_parallel - 1) / max_parallel ))
+          estimated_batches=$(( (item_count + batch_size - 1) / batch_size ))
+          echo "::notice::Further adjusted batch_size to ${batch_size} for max_parallel=${max_parallel} (${estimated_batches} batches)"
+        fi
+
+        # Build batches
+        batches_file="$(mktemp)"
+        jq --argjson size "${batch_size}" -n --slurpfile items "${items_file}" '
+          ($items[0] // []) as $arr
+          | [ range(0; ($arr|length); $size) ]
+          | [ .[] as $i
+              | { id: ( ($i / $size)|floor ), items: ($arr | .[$i : ($i + $size)]) }
+            ]
+        ' > "${batches_file}"
+
+        # Safety check
+        if [ "$(jq 'length' "${batches_file}")" -gt "${MAX_MATRIX_CONFIGS}" ]; then
+          echo "::error::Batch count exceeds matrix limit even after adjustment."
+          cat "${batches_file}"
+          exit 1
+        fi
+
+        # Persist for later download (some workflows expect this path)
+        mkdir -p "${RUNNER_TEMP}"
+        cp "${batches_file}" "${RUNNER_TEMP}/batches.json"
+
+        # ✅ set multiline output safely
+        {
+          echo 'batches<<__JSON__' >> "$GITHUB_OUTPUT"
+          cat "${batches_file}" >> "$GITHUB_OUTPUT"
+          echo '__JSON__' >> "$GITHUB_OUTPUT"
+        }
