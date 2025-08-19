@@ -138,4 +138,5 @@ jobs:
     uses: softlink-dev/.github/.github/workflows/_summarize-enhanced.yml@main
     with:
       post_mode: ${{ inputs.post_mode }}
+      control_repo_ref: ${{ inputs.control_repo_ref }}
     secrets: inherit
