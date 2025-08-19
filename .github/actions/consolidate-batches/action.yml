@@ -134,7 +134,7 @@ runs:
           if [ -f "$SUMMARY_TEMPLATE_PATH" ]; then
             SUMMARY_TEMPLATE=$(cat "$SUMMARY_TEMPLATE_PATH")
           else
-            SUMMARY_TEMPLATE="You are a technical writer tasked with creating a concise summary of a code review.
+            SUMMARY_TEMPLATE='You are a technical writer tasked with creating a concise summary of a code review.
 
 ## TASK
 Summarize the following code review in under 500 words. Focus on the most important findings and actionable recommendations.
@@ -156,7 +156,7 @@ Summarize the following code review in under 500 words. Focus on the most import
 ## CODE REVIEW TO SUMMARIZE:
 {{REVIEW_CONTENT}}
 
-## SUMMARY (under 500 words):"
+## SUMMARY (under 500 words):'
           fi
           
           # Replace template variable with actual review content

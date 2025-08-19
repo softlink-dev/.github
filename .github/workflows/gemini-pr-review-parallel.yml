@@ -91,7 +91,8 @@ jobs:
       - name: Precheck
         uses: softlink-dev/.github/.github/actions/precheck@main
         with:
-          post_mode: ${{ inputs.post_mode }}
+          force_review: 'true'
+          min_lines_threshold: '2'
 
   prepare:
     name: Build review manifest
