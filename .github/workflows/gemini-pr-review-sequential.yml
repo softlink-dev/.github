@@ -54,7 +54,7 @@ jobs:
     if: needs.precheck.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     outputs:
-      files_json: ${{ steps.manifest.outputs.files_json }}
+      files_json: ${{ steps.manifest.outputs.items }}
       policy_found: ${{ steps.policy.outputs.found }}
       policy_scope: ${{ steps.policy.outputs.scope }}
       policy_path_resolved: ${{ steps.policy.outputs.path }}
