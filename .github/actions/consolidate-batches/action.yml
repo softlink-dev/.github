@@ -109,8 +109,12 @@ runs:
           # Create AI-generated summary using Gemini CLI
           echo "Generating AI summary of the detailed review..."
           
-          # Create summary prompt
-          SUMMARY_PROMPT="You are a technical writer tasked with creating a concise summary of a code review.
+          # Load summary prompt template
+          SUMMARY_TEMPLATE_PATH="$(dirname "$0")/summary-prompt.md"
+          if [ -f "$SUMMARY_TEMPLATE_PATH" ]; then
+            SUMMARY_TEMPLATE=$(cat "$SUMMARY_TEMPLATE_PATH")
+          else
+            SUMMARY_TEMPLATE="You are a technical writer tasked with creating a concise summary of a code review.
 
 ## TASK
 Summarize the following code review in under 500 words. Focus on the most important findings and actionable recommendations.
@@ -130,9 +134,13 @@ Summarize the following code review in under 500 words. Focus on the most import
 - End with overall assessment
 
 ## CODE REVIEW TO SUMMARIZE:
-$(cat consolidate_review.md)
+{{REVIEW_CONTENT}}
 
 ## SUMMARY (under 500 words):"
+          fi
+          
+          # Replace placeholder with actual review content
+          SUMMARY_PROMPT=$(echo "$SUMMARY_TEMPLATE" | sed "s/{{REVIEW_CONTENT}}/$(cat consolidate_review.md | sed 's/[[\]/\\&/g')/g")
 
           # Create summary using Gemini CLI
           SUMMARY_CONTENT=$(echo "$SUMMARY_PROMPT" | gemini --model gemini-2.5-pro --prompt - 2>/dev/null || echo "Summary generation failed")
