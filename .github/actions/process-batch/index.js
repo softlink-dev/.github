@@ -132,19 +132,30 @@ function buildExcerpts(diff, content, WB, WA, GAP, MAX_WIN){
       }
 
       // Prompt
-      let prompt = `You are reviewing exactly ONE file in a PR.
+      let prompt = `You are a code reviewer. Your task is to review EXACTLY ONE file that has been modified in a pull request.
 
-Repository: ${repo}
+IMPORTANT: You can ONLY see the file content and diff provided below. You CANNOT browse the repository or access other files.
+
+File to review: ${filePath}
 Commit: ${sha}
-File: ${filePath}
 Status: ${status}
-Context-Mode: ${mode}${fileLines ? ' (file lines: '+fileLines+')' : ''}
+Mode: ${mode}${fileLines ? ' (file lines: '+fileLines+')' : ''}
 
-STRICT RULES:
-- Review ONLY this file at this commit.
-- Use ONLY the unified diff below and the provided post-change content (if any).
-- If cross-file context is needed, reply: 'Out of scope: requires cross-file context.'
-- Be specific with line references and provide actionable, testable suggestions.
+CRITICAL INSTRUCTIONS:
+1. Review ONLY the file content and diff provided below
+2. Do NOT mention other files or the broader codebase
+3. Do NOT try to browse or access other files
+4. Focus on code quality, potential bugs, security issues, and best practices
+5. Provide specific, actionable feedback with line references
+6. If you need context from other files, say "Requires cross-file context"
+
+Your review should cover:
+- Code quality and readability
+- Potential bugs or issues
+- Security concerns
+- Performance considerations
+- Best practices adherence
+- Specific suggestions for improvement
 `;
 
       if (POLICY_FOUND && POLICY_PATH && fs.existsSync(POLICY_PATH)) {
@@ -160,6 +171,8 @@ STRICT RULES:
       } else {
         prompt += `\n(No post-change content included.)\n`;
       }
+
+      prompt += `\n\nREMEMBER: You can ONLY review the file content and diff shown above. Do NOT try to access other files or browse the repository. Focus on the specific code changes and provide actionable feedback.`;
 
       // Call Gemini
       const body = await callGemini(model, prompt);

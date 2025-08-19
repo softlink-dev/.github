@@ -63,6 +63,44 @@ jobs:
           
           echo "::debug::Files created in $OUT_DIR:"
           ls -la "$OUT_DIR"/
+          
+          # Reorganize files to use PR number and flatten structure
+          echo "::debug::Reorganizing files to use PR number format with flat structure..."
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_DIR="PR#${PR_NUMBER}"
+          
+          # Create PR-specific directory
+          mkdir -p "$OUT_DIR/$PR_DIR"
+          
+                     # Remove commit-specific directories (we only want consolidated files)
+           for commit_dir in "$OUT_DIR"/*/; do
+             if [ -d "$commit_dir" ] && [ "$(basename "$commit_dir")" != "$PR_DIR" ]; then
+               echo "::debug::Removing commit directory: $commit_dir"
+               rm -rf "$commit_dir"
+             fi
+           done
+          
+                     # Move and rename standalone files to PR directory
+           for file in "$OUT_DIR"/*.md; do
+             if [ -f "$file" ]; then
+               FILENAME=$(basename "$file")
+               if [ "$FILENAME" = "PR-REPORT.md" ]; then
+                 echo "::debug::Moving $file to $OUT_DIR/$PR_DIR/DETAILED-REVIEW.md"
+                 mv "$file" "$OUT_DIR/$PR_DIR/DETAILED-REVIEW.md"
+               elif [ "$FILENAME" = "SUMMARY.md" ]; then
+                 echo "::debug::Moving $file to $OUT_DIR/$PR_DIR/SUMMARY.md"
+                 mv "$file" "$OUT_DIR/$PR_DIR/SUMMARY.md"
+               else
+                 echo "::debug::Moving $file to $OUT_DIR/$PR_DIR/"
+                 mv "$file" "$OUT_DIR/$PR_DIR/"
+               fi
+             fi
+           done
+          
+          echo "::debug::Final structure in $OUT_DIR:"
+          ls -la "$OUT_DIR"/
+          echo "::debug::Contents of $OUT_DIR/$PR_DIR:"
+          ls -la "$OUT_DIR/$PR_DIR/"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -77,10 +115,17 @@ jobs:
             fi
             git add "$OUT_DIR" || true
             if git commit -m "chore: add AI review results for PR #${{ github.event.pull_request.number }} [skip ci]"; then
+              echo "::debug::Commit successful, attempting push..."
               if git push; then
+                echo "::debug::Push successful!"
                 echo "Committed and pushed review results"
+                echo "::debug::Files should be available at: https://github.com/${{ github.repository }}/tree/${{ github.event.pull_request.head.ref }}/.github/review-results/"
                 break
+              else
+                echo "::debug::Push failed!"
               fi
+            else
+              echo "::debug::Commit failed!"
             fi
             retries=$((retries - 1))
             echo "Retrying git ops... ($retries left)"; sleep 5
