@@ -77,7 +77,11 @@ runs:
             let count = 0;
             for (const f of (commit.data.files || [])) {
               const path = f.filename;
-              if (exclude.test(path)) continue;
+              console.log(`Checking file: ${path} against regex: ${process.env.EXCLUDE_REGEX}`);
+              if (exclude.test(path)) {
+                console.log(`Excluding file: ${path}`);
+                continue;
+              }
               if (!['added','modified','renamed','changed'].includes(f.status)) continue;
               const isBinary = (f.patch == null);
 

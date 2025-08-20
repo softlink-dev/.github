@@ -11,7 +11,7 @@ on:
       exclude_regex:
         type: string
         required: false
-        default: '(\.github/review-results/|\.github/review-results/.*|DETAILED-REVIEW\.md|SUMMARY\.md)'
+        default: '\.github/review-results/'
         description: 'Regex pattern to exclude files from review'
       max_files:
         type: string

@@ -627,9 +627,12 @@ This design document provides a complete technical specification for the working
 - **Report Date**: 2025-01-19
 - **Error Description**: Create batches action is including previous review result files in the batch, causing circular dependency
 - **Investigation**: The manifest generation is picking up `.github/review-results/DETAILED-REVIEW.md` and `.github/review-results/SUMMARY.md` files from previous runs
-- **Root Cause**: The exclude regex pattern `(\.github/review-results/.*)` was not comprehensive enough to catch all review result files
-- **Fix Applied**: Updated exclude regex to `(\.github/review-results/|\.github/review-results/.*|DETAILED-REVIEW\.md|SUMMARY\.md)` to ensure all review result files are excluded
+- **Root Cause**: The exclude regex pattern is not being applied correctly - files are still being included despite the regex pattern
+- **Fix Applied**: 
+  1. Added debug logging to `generate-manifest` action to see regex application
+  2. Simplified exclude regex to `\.github/review-results/` to test basic functionality
+  3. Need to verify if regex is being applied correctly
 - **Status**: [INVESTIGATING]
-- **Test Results**: Updated exclude regex pattern to be more comprehensive - awaiting user confirmation from testing
+- **Test Results**: Added debug logging and simplified regex pattern - awaiting user confirmation from testing to see debug output
 
 ---
