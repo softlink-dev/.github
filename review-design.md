@@ -596,4 +596,13 @@ This design document provides a complete technical specification for the working
 - **Status**: [INVESTIGATING]
 - **Test Results**: Replaced complex jq analysis with simple character count - awaiting user confirmation from testing
 
+#### Error 4: Invalid Bash Syntax in Debug Step
+- **Report Date**: 2025-01-19
+- **Error Description**: Debug step failing with invalid bash syntax `${#inputs.batch_json}`
+- **Investigation**: The `${#variable}` syntax is for bash variables, but `inputs.batch_json` is a GitHub Actions context expression
+- **Root Cause**: Mixing GitHub Actions context expressions with bash variable syntax incorrectly
+- **Fix Applied**: Removed the problematic character count line to avoid bash syntax errors
+- **Status**: [INVESTIGATING]
+- **Test Results**: Removed invalid bash syntax - awaiting user confirmation from testing
+
 ---
