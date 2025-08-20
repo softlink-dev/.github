@@ -39,9 +39,23 @@ runs:
         echo "Current directory contents:"
         ls -la
         
-        # Debug: Check for batch artifacts
-        echo "Looking for review-batch-* patterns:"
-        ls review-batch-* 2>/dev/null || echo "No review-batch-* found"
+                 # Debug: Check for batch artifacts
+         echo "Looking for review-batch-* patterns:"
+         ls review-batch-* 2>/dev/null || echo "No review-batch-* found"
+         
+         # Debug: Check the structure of batch directories
+         for batch_dir in review-batch-*; do
+           if [ -d "$batch_dir" ]; then
+             echo "Batch directory: $batch_dir"
+             ls -la "$batch_dir"
+             if [ -d "$batch_dir/reviews" ]; then
+               echo "Reviews subdirectory exists:"
+               ls -la "$batch_dir/reviews"
+             else
+               echo "No reviews subdirectory found"
+             fi
+           fi
+         done
         
         # Create detailed review by combining all batch results
         echo "# AI Code Review - Detailed Report ${PR_NUM:+for PR #$PR_NUM}" > consolidate_review.md
@@ -60,20 +74,23 @@ runs:
           TOTAL_FILES=0
           BATCH_COUNT=0
           
-          # Process each batch artifact
-          for batch_dir in review-batch-*; do
-            if [ -d "$batch_dir" ]; then
-              BATCH_COUNT=$((BATCH_COUNT + 1))
-              echo "Processing batch: $batch_dir"
-              
-                             # Count files in this batch
+                     # Process each batch artifact
+           for batch_dir in review-batch-*; do
+             if [ -d "$batch_dir" ]; then
+               BATCH_COUNT=$((BATCH_COUNT + 1))
+               echo "Processing batch: $batch_dir"
+               
+               # Count files in this batch - check both structures
+               BATCH_FILES=0
                if [ -d "$batch_dir/reviews" ]; then
                  BATCH_FILES=$(find "$batch_dir/reviews" -name "*.md" -type f | grep -v summary.json | wc -l)
-                 TOTAL_FILES=$((TOTAL_FILES + BATCH_FILES))
-                 echo "- **Batch $BATCH_COUNT:** $BATCH_FILES files reviewed" >> consolidate_review.md
+               else
+                 BATCH_FILES=$(find "$batch_dir" -name "*.md" -type f | grep -v summary.json | wc -l)
                fi
-            fi
-          done
+               TOTAL_FILES=$((TOTAL_FILES + BATCH_FILES))
+               echo "- **Batch $BATCH_COUNT:** $BATCH_FILES files reviewed" >> consolidate_review.md
+             fi
+           done
           
           echo "" >> consolidate_review.md
           echo "### Overall Statistics" >> consolidate_review.md
@@ -85,34 +102,40 @@ runs:
           echo "## 📝 File Reviews" >> consolidate_review.md
           echo "" >> consolidate_review.md
           
-                     # Process each batch directory and accumulate all reviews
-           for batch_dir in review-batch-*; do
-             if [ -d "$batch_dir" ] && [ -d "$batch_dir/reviews" ]; then
-               echo "### Batch $batch_dir" >> consolidate_review.md
-               echo "" >> consolidate_review.md
-               
-               # Process each review file in the batch and add to detailed review
-               for review_file in $(find "$batch_dir/reviews" -name "*.md" -type f | grep -v summary.json | sort); do
-                 if [ -f "$review_file" ]; then
-                   echo "Processing: $review_file"
-                   
-                   # Extract filename and create a clear heading
-                   filename=$(basename "$review_file" .md)
-                   original_path=$(echo "$filename" | sed 's/_/\//g' | sed 's/^\.\///')
-                   
-                   # Add file heading before the review content
-                   echo "### 📄 $original_path" >> consolidate_review.md
-                   echo "" >> consolidate_review.md
-                   
-                   # Add the review content
-                   cat "$review_file" >> consolidate_review.md
-                   echo "" >> consolidate_review.md
-                   echo "---" >> consolidate_review.md
-                   echo "" >> consolidate_review.md
-                 fi
-               done
-             fi
-           done
+                                # Process each batch directory and accumulate all reviews
+            for batch_dir in review-batch-*; do
+              if [ -d "$batch_dir" ]; then
+                echo "### Batch $batch_dir" >> consolidate_review.md
+                echo "" >> consolidate_review.md
+                
+                # Determine the path to search for review files
+                SEARCH_PATH="$batch_dir"
+                if [ -d "$batch_dir/reviews" ]; then
+                  SEARCH_PATH="$batch_dir/reviews"
+                fi
+                
+                # Process each review file in the batch and add to detailed review
+                for review_file in $(find "$SEARCH_PATH" -name "*.md" -type f | grep -v summary.json | sort); do
+                  if [ -f "$review_file" ]; then
+                    echo "Processing: $review_file"
+                    
+                    # Extract filename and create a clear heading
+                    filename=$(basename "$review_file" .md)
+                    original_path=$(echo "$filename" | sed 's/_/\//g' | sed 's/^\.\///')
+                    
+                    # Add file heading before the review content
+                    echo "### 📄 $original_path" >> consolidate_review.md
+                    echo "" >> consolidate_review.md
+                    
+                    # Add the review content
+                    cat "$review_file" >> consolidate_review.md
+                    echo "" >> consolidate_review.md
+                    echo "---" >> consolidate_review.md
+                    echo "" >> consolidate_review.md
+                  fi
+                done
+              fi
+            done
           
           # Create AI-generated summary using Gemini CLI
           echo "Generating AI summary of the detailed review..."
