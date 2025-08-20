@@ -120,8 +120,22 @@ runs:
           # Load summary prompt template
           SUMMARY_TEMPLATE_PATH="$(dirname "$0")/summary-prompt.md"
           if [ ! -f "$SUMMARY_TEMPLATE_PATH" ]; then
-            echo "Error: summary-prompt.md not found at $SUMMARY_TEMPLATE_PATH"
-            exit 1
+            # Try alternative paths
+            SUMMARY_TEMPLATE_PATH="./summary-prompt.md"
+            if [ ! -f "$SUMMARY_TEMPLATE_PATH" ]; then
+              SUMMARY_TEMPLATE_PATH=".github/actions/consolidate-batches/summary-prompt.md"
+              if [ ! -f "$SUMMARY_TEMPLATE_PATH" ]; then
+                echo "Error: summary-prompt.md not found in any expected location"
+                echo "Current directory: $(pwd)"
+                echo "Action directory: $(dirname "$0")"
+                echo "Tried paths:"
+                echo "  - $(dirname "$0")/summary-prompt.md"
+                echo "  - ./summary-prompt.md"
+                echo "  - .github/actions/consolidate-batches/summary-prompt.md"
+                ls -la . || echo "Cannot list current directory"
+                exit 1
+              fi
+            fi
           fi
           SUMMARY_TEMPLATE=$(cat "$SUMMARY_TEMPLATE_PATH")
           
