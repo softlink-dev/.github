@@ -118,9 +118,23 @@ runs:
                   if [ -f "$review_file" ]; then
                     echo "Processing: $review_file"
                     
-                    # Extract filename and create a clear heading
+                    # Extract filename and create a clear heading with robust path reconstruction
                     filename=$(basename "$review_file" .md)
-                    original_path=$(echo "$filename" | sed 's/_/\//g' | sed 's/^\.\///')
+                    
+                    # Robust path reconstruction with fallback
+                    original_path=""
+                    if [[ "$filename" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+                      # Try to reconstruct path from sanitized filename
+                      temp_path=$(echo "$filename" | sed 's/_/\//g' | sed 's/^\.\///')
+                      # Validate the reconstructed path looks reasonable
+                      if [[ "$temp_path" =~ ^[a-zA-Z0-9./_-]+$ ]] && [[ "$temp_path" != "$filename" ]]; then
+                        original_path="$temp_path"
+                      else
+                        original_path="$filename (path reconstruction failed)"
+                      fi
+                    else
+                      original_path="$filename (invalid filename format)"
+                    fi
                     
                     # Add file heading before the review content
                     echo "### 📄 $original_path" >> consolidate_review.md

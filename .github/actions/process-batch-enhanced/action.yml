@@ -13,6 +13,7 @@ inputs:
   policy_found: { required: false, default: "false" }
   policy_scope: { required: false, default: "" }
   policy_path: { required: false, default: "" }
+  pr_number: { description: "PR number for workspace directory", required: true }
 
 runs:
   using: node20

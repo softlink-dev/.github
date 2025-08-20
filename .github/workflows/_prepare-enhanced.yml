@@ -88,13 +88,17 @@ jobs:
           batch_size: ${{ inputs.batch_size }}
           max_parallel_batches: ${{ inputs.max_parallel_batches }}
 
-
+      - name: Upload batches.json artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: batches-json
+          path: ${{ env.RUNNER_TEMP }}/batches.json
 
       - name: Upload batches artifact
         uses: actions/upload-artifact@v4
         with:
           name: review-batches
-          path: ${{ runner.temp }}/batches.json
+          path: ${{ env.RUNNER_TEMP }}/batches.json
 
       - name: Validate batches artifact structure
         shell: bash

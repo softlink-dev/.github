@@ -330,8 +330,53 @@ You are reviewing ONLY \`{{FILE_PATH}}\`. You cannot see any other files or the 
 
 (async () => {
   try {
-    const batch = JSON.parse(core.getInput('batch_json', { required: true }));
+    // Parse and validate batch JSON input with robust error handling
+    let batch;
+    try {
+      const batchInput = core.getInput('batch_json', { required: true });
+      batch = JSON.parse(batchInput);
+      
+      // Validate batch structure
+      if (!batch || typeof batch !== 'object') {
+        throw new Error('Batch must be a valid object');
+      }
+      
+      if (!Array.isArray(batch.items)) {
+        throw new Error('Batch must contain an "items" array');
+      }
+      
+      if (batch.items.length === 0) {
+        core.warning('Batch contains no items to process');
+        return;
+      }
+      
+      // Validate each item in the batch
+      for (let i = 0; i < batch.items.length; i++) {
+        const item = batch.items[i];
+        if (!item || typeof item !== 'object') {
+          throw new Error(`Invalid item at index ${i}: must be an object`);
+        }
+        if (!item.path || typeof item.path !== 'string') {
+          throw new Error(`Invalid item at index ${i}: missing or invalid "path" field`);
+        }
+        if (!item.sha || typeof item.sha !== 'string') {
+          throw new Error(`Invalid item at index ${i}: missing or invalid "sha" field`);
+        }
+      }
+      
+    } catch (error) {
+      core.setFailed(`Failed to parse or validate batch JSON: ${error.message}`);
+      return;
+    }
+    
     const model = core.getInput('model', { required: true });
+    const prNumber = core.getInput('pr_number', { required: true });
+    
+    // Validate PR number input
+    if (!prNumber || prNumber.trim() === '' || isNaN(parseInt(prNumber))) {
+      core.setFailed('Invalid PR number provided. PR number must be a valid non-empty number.');
+      return;
+    }
 
     const MAX_DIFF = parseInt(core.getInput('max_diff_lines'), 10);
     const FULL_FILE = parseInt(core.getInput('full_file_threshold_lines'), 10);
@@ -349,8 +394,16 @@ You are reviewing ONLY \`{{FILE_PATH}}\`. You cannot see any other files or the 
       return;
     }
 
-    // Create output directories (LESSON: Flat structure from sequential system)
-    fs.mkdirSync('prompt-log', { recursive: true });
+    // Create dedicated workspace directory for this PR
+    const workspaceDir = `.github/review-work/PR-${prNumber}`;
+    const parentDir = path.dirname(workspaceDir);
+    if (!fs.existsSync(parentDir)) {
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.mkdirSync(`${workspaceDir}/prompt-log`, { recursive: true });
+    
+    core.info(`📁 Created dedicated workspace: ${workspaceDir}`);
 
     // Load enhanced prompt template (LESSON: Better AI prompts from sequential system)
     const promptTemplate = loadPromptTemplate();
@@ -434,7 +487,7 @@ You are reviewing ONLY \`{{FILE_PATH}}\`. You cannot see any other files or the 
 
       // LESSON: Save debug prompt (from sequential system)
       const safeFilename = sanitize(filePath);
-      const debugPromptPath = `prompt-log/PROMPT-${safeFilename}.md`;
+      const debugPromptPath = `${workspaceDir}/prompt-log/PROMPT-${safeFilename}.md`;
       fs.writeFileSync(debugPromptPath, prompt, 'utf8');
       core.info(`🔍 Debug prompt saved to: ${debugPromptPath}`);
 
@@ -446,10 +499,9 @@ You are reviewing ONLY \`{{FILE_PATH}}\`. You cannot see any other files or the 
         return result;
       });
 
-      // LESSON: Flat output structure (from sequential system)
-      const outDir = `.`;
+      // LESSON: Flat output structure in dedicated workspace
       const header = `## ${filePath} @ ${sha.slice(0,8)}\n\n**Mode:** ${mode}  |  **Lines:** ${fileLines || 0}\n\n`;
-      fs.writeFileSync(`${outDir}/${safeFilename}.md`, header + (body || 'Review failed - no response from AI service.') + `\n\n---\n`, 'utf8');
+      fs.writeFileSync(`${workspaceDir}/${safeFilename}.md`, header + (body || 'Review failed - no response from AI service.') + `\n\n---\n`, 'utf8');
 
       if (body) {
         core.info(`✅ Completed: ${filePath}`);
@@ -472,12 +524,12 @@ You are reviewing ONLY \`{{FILE_PATH}}\`. You cannot see any other files or the 
       batch_id: batch.id || 'unknown',
       timestamp: new Date().toISOString()
     };
-    fs.writeFileSync('summary.json', JSON.stringify(summary, null, 2), 'utf8');
+    fs.writeFileSync(`${workspaceDir}/summary.json`, JSON.stringify(summary, null, 2), 'utf8');
 
     // LESSON: Enhanced logging (from sequential system)
     core.info(`🎉 Batch processing complete: ${processedCount}/${totalFiles} files processed successfully`);
-    core.info(`📁 Results saved to: current directory (flat structure)`);
-    core.info(`🔍 Debug prompts saved to: prompt-log/ directory`);
+    core.info(`📁 Results saved to: ${workspaceDir} (flat structure)`);
+    core.info(`🔍 Debug prompts saved to: ${workspaceDir}/prompt-log/ directory`);
 
   } catch (e) {
     core.setFailed(e.message);

@@ -32,6 +32,7 @@ jobs:
           pattern: review-batch-*
           merge-multiple: false
           create-artifact-meta: false
+          if-no-files-found: warn
 
       - name: Validate downloaded batch artifacts
         shell: bash

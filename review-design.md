@@ -27,6 +27,8 @@ This system is an **enhanced parallel version** of a working sequential AI code 
 │   ├── generate-manifest/                # File manifest generation
 │   ├── create-batches/                   # Batch creation
 │   └── precheck/                         # PR validation
+├── review-work/                          # Intermediate workspace (PR-specific)
+│   └── PR-{NUMBER}/                      # Dedicated workspace per PR
 └── review-results/                       # Final output location (PR-specific subdirectories)
 ```
 
@@ -164,6 +166,17 @@ review-batch-0/
     PROMPT-file2.md
 ```
 
+**Workspace Structure**:
+```
+.github/review-work/PR-{NUMBER}/
+  file1.md
+  file2.md
+  summary.json
+  prompt-log/
+    PROMPT-file1.md
+    PROMPT-file2.md
+```
+
 ---
 
 ## Workflow 3: `_summarize-enhanced.yml`
@@ -213,19 +226,19 @@ review-batch-0/
 - `GEMINI_API_KEY`: API key for Gemini service
 
 **Outputs**:
-- Review files in current directory with sanitized filenames
+- Review files in dedicated workspace directory with sanitized filenames
 - Debug prompts in `prompt-log/` directory
 - `summary.json` with batch statistics
 
 **Output Structure**:
 ```
-./
+.github/review-work/PR-{NUMBER}/
   {actual_src_file_1}.md
   {actual_src_file_2}.md
   summary.json
-prompt-log/
-  PROMPT-{actual_src_file_1}.md
-  PROMPT-{actual_src_file_2}.md
+  prompt-log/
+    PROMPT-{actual_src_file_1}.md
+    PROMPT-{actual_src_file_2}.md
 ```
 
 **File Naming Convention**:
@@ -276,9 +289,15 @@ review-batch-1/
 
 ### Data Flow:
 1. **Prepare** → Creates batches → Uploads `review-batches` artifact
-2. **Review** → Processes batch → Creates files in current directory → Uploads `review-batch-{id}` with flat structure
+2. **Review** → Processes batch → Creates files in dedicated workspace → Uploads `review-batch-{id}` with flat structure
 3. **Summarize** → Downloads `review-batch-*` → Expects flat structure → Consolidates
 4. **Final Output** → Commits results to `.github/review-results/PR-{NUMBER}/` with complete structure
+
+### Workspace Architecture:
+- **Dedicated Workspace**: `.github/review-work/PR-{NUMBER}/` for each PR
+- **Complete Isolation**: No risk of mixing intermediate files with repository files
+- **Clean Separation**: All batch processing happens in dedicated workspace
+- **Easy Debugging**: Clear location for all intermediate files
 
 ---
 
@@ -299,7 +318,7 @@ review-batch-1/
 **Key Features:**
 - **PR-Specific Directories**: Each PR gets its own directory (`PR-123/`, `PR-456/`, etc.)
 - **Flat Organization**: No nested subdirectories except for `prompt-log/`
-- **Consistent Naming**: Files use sanitized paths (e.g., `src_utils_math.js.md`)
+- **Enhanced Naming**: Files use sanitized paths with robust reconstruction (e.g., `src_utils_math.js.md` → `src/utils/math.js`)
 - **Debug Support**: All AI prompts saved for troubleshooting and transparency
 - **Complete Traceability**: Easy to correlate review files with source files
 
@@ -307,7 +326,8 @@ review-batch-1/
 - **Isolation**: Multiple PRs can have reviews without conflicts
 - **Simplicity**: Flat structure is easy to process and debug
 - **Transparency**: Debug prompts available for understanding AI decisions
-- **Maintainability**: Consistent naming makes reviews easy to find and correlate
+- **Maintainability**: Enhanced naming with validation makes reviews easy to find and correlate
+- **Robustness**: Path reconstruction handles edge cases gracefully with clear fallback messages
 
 ---
 
@@ -373,9 +393,9 @@ review-batch-1/
 
 ### 3. File Naming Conflicts
 **Scenario**: Special characters in file paths causing issues
-**Symptoms**: Missing review files, sanitization errors
-**Mitigation**: Robust sanitization function implemented
-**Monitoring**: Check for sanitized filename patterns
+**Symptoms**: Missing review files, sanitization errors, path reconstruction failures
+**Mitigation**: Robust sanitization function implemented with enhanced path reconstruction
+**Monitoring**: Check for sanitized filename patterns and path reconstruction validation
 
 ### 4. Git Commit Failures
 **Scenario**: PR branch conflicts or permission issues
@@ -469,12 +489,21 @@ review-batch-1/
 
 ### Expected Behavior
 - **Prepare Job**: Creates batches and uploads `review-batches` artifact
-- **Review Jobs**: Process files and upload `review-batch-{id}` artifacts with flat structure
+- **Review Jobs**: Process files in dedicated workspace and upload `review-batch-{id}` artifacts with flat structure
 - **Summarize Job**: Downloads all batch artifacts and consolidates
 - **Final Output**: Detailed review and summary committed to `.github/review-results/PR-{NUMBER}/`
 
+### Workspace Benefits:
+- **Isolation**: Each PR has its own workspace directory
+- **Clean Artifacts**: Only workspace files are uploaded, not entire repository
+- **Debugging**: Easy to locate and inspect intermediate files
+- **No Conflicts**: Multiple PRs can run simultaneously without interference
+
 ### Debug Commands
 ```bash
+# Check workspace structure (during processing)
+ls -la .github/review-work/PR-*/
+
 # Check artifact structure
 ls -la review-batch-*/
 
@@ -500,6 +529,10 @@ tree .github/review-results/PR-*/ || ls -la .github/review-results/PR-*/
 ls -la .github/review-results/PR-*/DETAILED-REVIEW.md
 ls -la .github/review-results/PR-*/SUMMARY.md
 ls -la .github/review-results/PR-*/prompt-log/PROMPT-*.md
+
+# Workspace debugging commands
+ls -la .github/review-work/PR-*/prompt-log/
+cat .github/review-work/PR-*/summary.json
 ```
 
 ## Recommendations
@@ -510,12 +543,18 @@ ls -la .github/review-results/PR-*/prompt-log/PROMPT-*.md
 4. **✅ Validation added** - Comprehensive checks ensure expected structures exist
 5. **✅ Logging improved** - Detailed tracking of artifact creation and consumption
 6. **✅ Parallelization control implemented** - Rate limiting and sequential processing
-7. **✅ Consistent file naming** - Sanitized paths for better traceability
+7. **✅ Enhanced file naming** - Robust path reconstruction with validation and fallback
+8. **✅ Dedicated workspace architecture** - Complete isolation of intermediate files
+9. **✅ Input validation** - Robust validation for PR number and batch JSON inputs
+10. **✅ Workspace validation** - Pre-upload validation ensures workspace integrity
 
 **Next Steps:**
 - Run end-to-end testing with a test PR
 - Monitor for any edge cases or performance issues
 - Document any new issues discovered during testing
+- Verify workspace isolation and clean artifact uploads
+- Test path reconstruction with various filename patterns
+- Validate input validation with edge cases
 
 ## Implementation Guidelines
 
@@ -544,7 +583,9 @@ ls -la .github/review-results/PR-*/prompt-log/PROMPT-*.md
 2. **Monitor workflow execution** - Check each job step for proper behavior
 3. **Verify artifact structures** - Ensure flat structure is maintained throughout
 4. **Test rate limiting** - Verify API rate limits are handled gracefully
-5. **Validate final output** - Check PR-specific review results directory
+5. **Test path reconstruction** - Verify filename reconstruction works with various patterns
+6. **Test input validation** - Verify PR number and batch JSON validation works correctly
+7. **Validate final output** - Check PR-specific review results directory
 
 **IMPORTANT**: When errors are reported during testing, update the "Reported Errors & Fixes" section below with details about the error, investigation findings, and implemented fixes. Create the Errors as tasks that can be checked when done.
 
@@ -564,59 +605,10 @@ This design document provides a complete technical specification for the working
 - **Fix Applied**: What changes were made to resolve the issue
 - **Status**: [OPEN] / [INVESTIGATING] / [FIXED] / [VERIFIED]
 - **Test Results**: Results after applying the fix
+- **Clues and diagnostics**: Add clues and diagnostics identified under this section for each error
 
 **IMPORTANT**: Do not mark errors as [FIXED] immediately after applying changes. Record the attempted fix and wait for user confirmation from testing before updating status to [FIXED].
 
 ### Error Log
-
-#### Error 1: Debug Step Syntax Error in _prepare-enhanced.yml
-- **Report Date**: 2025-01-19
-- **Error Description**: Syntax error in debug step due to nested quotes in jq commands
-- **Investigation**: The debug step in `_prepare-enhanced.yml` has nested single quotes in jq commands causing bash syntax error
-- **Root Cause**: `jq -r ''length // 0''` and `jq -r ''.[0] // "none"''` have conflicting quote nesting due to YAML multiline processing
-- **Fix Applied**: Removed the debug step entirely since it's not critical for workflow functionality
-- **Status**: [FIXED]
-- **Test Results**: Debug step completely removed - no more syntax errors
-
-#### Error 2-5: Debug Step Issues (Consolidated)
-- **Report Date**: 2025-01-19
-- **Error Description**: Multiple debug step issues across workflows due to YAML multiline processing and quote escaping
-- **Investigation**: Debug steps were causing syntax errors due to complex JSON content and quote nesting issues
-- **Root Cause**: GitHub Actions YAML multiline processing having issues with complex JSON content and quote escaping
-- **Fix Applied**: Removed all problematic debug steps entirely since they're not critical for workflow functionality
-- **Status**: [FIXED]
-- **Test Results**: All debug steps removed - no more syntax errors
-
-#### Error 6: Upload Artifact Uploading Entire Repository
-- **Report Date**: 2025-01-19
-- **Error Description**: Upload batch artifact step is uploading the entire repository instead of just batch review files
-- **Investigation**: The `path: .` in upload-artifact is uploading everything in current directory, including the entire checked-out repository
-- **Root Cause**: Upload artifact path is too broad - should only upload the specific batch review files created by the process-batch-enhanced action
-- **Fix Applied**: Reverted to `path: .` since the process-batch-enhanced action creates files in current directory and we need all of them
-- **Status**: [FIXED]
-- **Test Results**: Upload artifact now correctly uploads all batch review files from current directory
-
-#### Error 7: Create Batches Including Review Result Files
-- **Report Date**: 2025-01-19
-- **Error Description**: Create batches action is including previous review result files in the batch, causing circular dependency
-- **Investigation**: The manifest generation is picking up `.github/review-results/DETAILED-REVIEW.md` and `.github/review-results/SUMMARY.md` files from previous runs
-- **Root Cause**: The exclude regex pattern is not being applied correctly - files are still being included despite the regex pattern
-- **Fix Applied**: 
-  1. Added debug logging to `generate-manifest` action to see regex application
-  2. Updated exclude regex to `\.github/review-results/.*` to match any file in the review-results directory
-  3. Removed problematic debug step that was causing syntax errors
-- **Status**: [FIXED]
-- **Test Results**: Updated regex pattern to `\.github/review-results/.*` - should now properly exclude review result files
-
-#### Error 8: Summarize Workflow Listing All Repository Files
-- **Report Date**: 2025-01-19
-- **Error Description**: Summarize workflow validation step is listing all files in the repository instead of just batch artifacts
-- **Investigation**: The validation step in `_summarize-enhanced.yml` is showing all files in current directory, including the entire checked-out repository
-- **Root Cause**: The validation step is using `ls -la` which shows all files, not just the downloaded batch artifacts
-- **Fix Applied**: 
-  1. Updated validation step to show batch artifacts separately from all files
-  2. Added `create-artifact-meta: false` to download step to prevent metadata files
-- **Status**: [FIXED]
-- **Test Results**: Validation step now clearly distinguishes between batch artifacts and repository files
-
+## No errors yet
 ---
