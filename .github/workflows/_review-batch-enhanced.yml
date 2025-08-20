@@ -49,6 +49,14 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
+      - name: Debug batch input
+        shell: bash
+        run: |
+          echo "Batch JSON input: ${{ inputs.batch_json }}"
+          echo "Batch ID: $(echo '${{ inputs.batch_json }}' | jq -r '.id // "unknown"')"
+          echo "Batch items count: $(echo '${{ inputs.batch_json }}' | jq -r '.items | length // 0')"
+          echo "Batch items: $(echo '${{ inputs.batch_json }}' | jq -r '.items[].path // "none"')"
+
       - name: Checkout repo (full history for git show)
         uses: actions/checkout@v4
         with:

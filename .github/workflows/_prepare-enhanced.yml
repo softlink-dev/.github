@@ -88,6 +88,13 @@ jobs:
           batch_size: ${{ inputs.batch_size }}
           max_parallel_batches: ${{ inputs.max_parallel_batches }}
 
+      - name: Debug batches output
+        shell: bash
+        run: |
+          echo "Batches output: ${{ steps.batch.outputs.batches }}"
+          echo "Batches length: $(echo '${{ steps.batch.outputs.batches }}' | jq -r 'length // 0')"
+          echo "First batch: $(echo '${{ steps.batch.outputs.batches }}' | jq -r '.[0] // "none"')"
+
       - name: Upload batches artifact
         uses: actions/upload-artifact@v4
         with:
