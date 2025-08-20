@@ -31,14 +31,17 @@ jobs:
           path: ./
           pattern: review-batch-*
           merge-multiple: false
+          create-artifact-meta: false
 
       - name: Validate downloaded batch artifacts
         shell: bash
         run: |
           echo "🔍 Validating downloaded batch artifacts..."
           
-          # Check current directory contents
-          echo "Current directory contents:"
+          # Check current directory contents (only batch-related files)
+          echo "Current directory contents (batch artifacts only):"
+          ls -la review-batch-* 2>/dev/null || echo "⚠️  WARNING: No batch directories found"
+          echo "All files in current directory:"
           ls -la || echo "⚠️  WARNING: ls command failed"
           
           # Check for batch directories with error handling

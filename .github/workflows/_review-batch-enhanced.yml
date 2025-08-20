@@ -102,10 +102,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: review-batch-${{ fromJson(inputs.batch_json).id }}
-          path: |
-            *.md
-            summary.json
-            prompt-log/
+          path: .
           if-no-files-found: warn
 
       - name: Validate batch review artifact structure

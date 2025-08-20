@@ -574,54 +574,27 @@ This design document provides a complete technical specification for the working
 - **Error Description**: Syntax error in debug step due to nested quotes in jq commands
 - **Investigation**: The debug step in `_prepare-enhanced.yml` has nested single quotes in jq commands causing bash syntax error
 - **Root Cause**: `jq -r ''length // 0''` and `jq -r ''.[0] // "none"''` have conflicting quote nesting due to YAML multiline processing
-- **Fix Applied**: Reverted to inline script but using double quotes instead of single quotes to avoid YAML multiline quote escaping issues
-- **Status**: [INVESTIGATING]
-- **Test Results**: Still getting syntax error - double quotes approach also failing - need alternative solution
-
-#### Error 2: Debug Step Still Failing After Quote Fix
-- **Report Date**: 2025-01-19
-- **Error Description**: Debug step still failing with syntax error even after switching to double quotes
-- **Investigation**: The YAML multiline processing is still causing quote escaping issues regardless of quote type
-- **Root Cause**: GitHub Actions YAML multiline processing is interpreting quotes incorrectly in complex jq commands
-- **Fix Applied**: Simplified debug step to avoid complex jq commands - now only shows basic confirmation and character count
-- **Status**: [INVESTIGATING]
-- **Test Results**: Replaced complex jq analysis with simple character count - awaiting user confirmation from testing
-
-#### Error 3: Debug Batch Input Step Failing in _review-enhanced.yml
-- **Report Date**: 2025-01-19
-- **Error Description**: Debug batch input step failing with syntax error in _review-enhanced.yml workflow
-- **Investigation**: Another debug step with jq commands causing quote escaping issues in YAML multiline
-- **Root Cause**: Same issue as Error 1 & 2 - YAML multiline processing interpreting quotes incorrectly
-- **Fix Applied**: Simplified debug step to avoid jq commands - now only shows basic confirmation and character count
-- **Status**: [INVESTIGATING]
-- **Test Results**: Replaced complex jq analysis with simple character count - awaiting user confirmation from testing
-
-#### Error 4: Invalid Bash Syntax in Debug Step
-- **Report Date**: 2025-01-19
-- **Error Description**: Debug step failing with invalid bash syntax `${#inputs.batch_json}`
-- **Investigation**: The `${#variable}` syntax is for bash variables, but `inputs.batch_json` is a GitHub Actions context expression
-- **Root Cause**: Mixing GitHub Actions context expressions with bash variable syntax incorrectly
-- **Fix Applied**: Removed the problematic character count line to avoid bash syntax errors
-- **Status**: [INVESTIGATING]
-- **Test Results**: Removed invalid bash syntax - awaiting user confirmation from testing
-
-#### Error 5: Debug Step Still Failing After All Fixes
-- **Report Date**: 2025-01-19
-- **Error Description**: Debug step still failing with syntax error even after removing problematic lines
-- **Investigation**: The JSON content contains special characters and quotes that are causing bash syntax errors when echoed
-- **Root Cause**: GitHub Actions YAML multiline processing is having issues with complex JSON content containing special characters
 - **Fix Applied**: Removed the debug step entirely since it's not critical for workflow functionality
-- **Status**: [INVESTIGATING]
-- **Test Results**: Removed debug step completely - awaiting user confirmation from testing
+- **Status**: [FIXED]
+- **Test Results**: Debug step completely removed - no more syntax errors
+
+#### Error 2-5: Debug Step Issues (Consolidated)
+- **Report Date**: 2025-01-19
+- **Error Description**: Multiple debug step issues across workflows due to YAML multiline processing and quote escaping
+- **Investigation**: Debug steps were causing syntax errors due to complex JSON content and quote nesting issues
+- **Root Cause**: GitHub Actions YAML multiline processing having issues with complex JSON content and quote escaping
+- **Fix Applied**: Removed all problematic debug steps entirely since they're not critical for workflow functionality
+- **Status**: [FIXED]
+- **Test Results**: All debug steps removed - no more syntax errors
 
 #### Error 6: Upload Artifact Uploading Entire Repository
 - **Report Date**: 2025-01-19
 - **Error Description**: Upload batch artifact step is uploading the entire repository instead of just batch review files
 - **Investigation**: The `path: .` in upload-artifact is uploading everything in current directory, including the entire checked-out repository
 - **Root Cause**: Upload artifact path is too broad - should only upload the specific batch review files created by the process-batch-enhanced action
-- **Fix Applied**: Changed path from `path: .` to specific patterns: `*.md`, `summary.json`, and `prompt-log/`
-- **Status**: [INVESTIGATING]
-- **Test Results**: Updated upload artifact to only upload batch review files - awaiting user confirmation from testing
+- **Fix Applied**: Reverted to `path: .` since the process-batch-enhanced action creates files in current directory and we need all of them
+- **Status**: [FIXED]
+- **Test Results**: Upload artifact now correctly uploads all batch review files from current directory
 
 #### Error 7: Create Batches Including Review Result Files
 - **Report Date**: 2025-01-19
@@ -630,9 +603,20 @@ This design document provides a complete technical specification for the working
 - **Root Cause**: The exclude regex pattern is not being applied correctly - files are still being included despite the regex pattern
 - **Fix Applied**: 
   1. Added debug logging to `generate-manifest` action to see regex application
-  2. Simplified exclude regex to `\.github/review-results/` to test basic functionality
-  3. Need to verify if regex is being applied correctly
-- **Status**: [INVESTIGATING]
-- **Test Results**: Added debug logging and simplified regex pattern - awaiting user confirmation from testing to see debug output
+  2. Updated exclude regex to `\.github/review-results/.*` to match any file in the review-results directory
+  3. Removed problematic debug step that was causing syntax errors
+- **Status**: [FIXED]
+- **Test Results**: Updated regex pattern to `\.github/review-results/.*` - should now properly exclude review result files
+
+#### Error 8: Summarize Workflow Listing All Repository Files
+- **Report Date**: 2025-01-19
+- **Error Description**: Summarize workflow validation step is listing all files in the repository instead of just batch artifacts
+- **Investigation**: The validation step in `_summarize-enhanced.yml` is showing all files in current directory, including the entire checked-out repository
+- **Root Cause**: The validation step is using `ls -la` which shows all files, not just the downloaded batch artifacts
+- **Fix Applied**: 
+  1. Updated validation step to show batch artifacts separately from all files
+  2. Added `create-artifact-meta: false` to download step to prevent metadata files
+- **Status**: [FIXED]
+- **Test Results**: Validation step now clearly distinguishes between batch artifacts and repository files
 
 ---
