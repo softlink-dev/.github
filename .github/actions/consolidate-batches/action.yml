@@ -60,12 +60,7 @@ runs:
            if [ -d "$batch_dir" ]; then
              echo "Batch directory: $batch_dir"
              ls -la "$batch_dir"
-             if [ -d "$batch_dir/reviews" ]; then
-               echo "Reviews subdirectory exists:"
-               ls -la "$batch_dir/reviews"
-             else
-               echo "No reviews subdirectory found"
-             fi
+             echo "Expected flat structure - files should be directly in batch directory"
            fi
          done
         
@@ -92,13 +87,8 @@ runs:
                BATCH_COUNT=$((BATCH_COUNT + 1))
                echo "Processing batch: $batch_dir"
                
-               # Count files in this batch - check both structures
-               BATCH_FILES=0
-               if [ -d "$batch_dir/reviews" ]; then
-                 BATCH_FILES=$(find "$batch_dir/reviews" -name "*.md" -type f | grep -v summary.json | wc -l)
-               else
-                 BATCH_FILES=$(find "$batch_dir" -name "*.md" -type f | grep -v summary.json | wc -l)
-               fi
+               # Count files in this batch - expect flat structure
+               BATCH_FILES=$(find "$batch_dir" -name "*.md" -type f | grep -v summary.json | wc -l)
                TOTAL_FILES=$((TOTAL_FILES + BATCH_FILES))
                echo "- **Batch $BATCH_COUNT:** $BATCH_FILES files reviewed" >> consolidate_review.md
              fi
@@ -120,11 +110,8 @@ runs:
                 echo "### Batch $batch_dir" >> consolidate_review.md
                 echo "" >> consolidate_review.md
                 
-                # Determine the path to search for review files
+                # Search for review files in flat structure
                 SEARCH_PATH="$batch_dir"
-                if [ -d "$batch_dir/reviews" ]; then
-                  SEARCH_PATH="$batch_dir/reviews"
-                fi
                 
                 # Process each review file in the batch and add to detailed review
                 for review_file in $(find "$SEARCH_PATH" -name "*.md" -type f | grep -v summary.json | sort); do

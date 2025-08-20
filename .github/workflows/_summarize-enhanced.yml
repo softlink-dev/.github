@@ -32,10 +32,121 @@ jobs:
           pattern: review-batch-*
           merge-multiple: false
 
+      - name: Validate downloaded batch artifacts
+        shell: bash
+        run: |
+          echo "🔍 Validating downloaded batch artifacts..."
+          
+          # Check current directory contents
+          echo "Current directory contents:"
+          ls -la || echo "⚠️  WARNING: ls command failed"
+          
+          # Check for batch directories with error handling
+          BATCH_DIRS=$(find . -name "review-batch-*" -type d | wc -l 2>/dev/null || echo '0')
+          echo "Found $BATCH_DIRS batch directories"
+          
+          if [ "$BATCH_DIRS" -eq 0 ]; then
+            echo "❌ ERROR: No batch artifacts found for consolidation"
+            echo "Expected directories: review-batch-*"
+            exit 1
+          fi
+          
+          # Validate each batch directory structure
+          TOTAL_FILES=0
+          TOTAL_BATCHES=0
+          
+          for batch_dir in review-batch-*; do
+            if [ -d "$batch_dir" ]; then
+              TOTAL_BATCHES=$((TOTAL_BATCHES + 1))
+              echo "Validating batch directory: $batch_dir"
+              
+              # Check for flat structure (no nested reviews directory)
+              if [ -d "$batch_dir/reviews" ]; then
+                echo "❌ ERROR: Found nested 'reviews' directory in $batch_dir - expected flat structure"
+                exit 1
+              fi
+              
+              # Check for summary.json
+              if [ ! -f "$batch_dir/summary.json" ]; then
+                echo "❌ ERROR: summary.json not found in $batch_dir"
+                exit 1
+              fi
+              
+              # Safely check if jq is available
+              if ! command -v jq &> /dev/null; then
+                echo "⚠️  WARNING: jq not available, skipping JSON validation for $batch_dir"
+                echo "  ✅ $batch_dir: summary.json exists (validation skipped)"
+              else
+                # Validate summary.json
+                if ! jq -e '.' "$batch_dir/summary.json" > /dev/null 2>&1; then
+                  echo "❌ ERROR: Invalid JSON in $batch_dir/summary.json"
+                  exit 1
+                fi
+              fi
+              
+              # Count review files with error handling
+              REVIEW_FILES=$(find "$batch_dir" -name "*.md" -type f | grep -v summary.json | wc -l 2>/dev/null || echo '0')
+              TOTAL_FILES=$((TOTAL_FILES + REVIEW_FILES))
+              
+              echo "  ✅ $batch_dir: $REVIEW_FILES review files + summary.json"
+              
+              # Check for prompt-log directory
+              if [ -d "$batch_dir/prompt-log" ]; then
+                PROMPT_COUNT=$(find "$batch_dir/prompt-log" -name "*.md" -type f | wc -l 2>/dev/null || echo '0')
+                echo "  📝 $batch_dir: $PROMPT_COUNT debug prompt files"
+              fi
+            fi
+          done
+          
+          echo "✅ Downloaded artifacts validation passed:"
+          echo "   - Total batches: $TOTAL_BATCHES"
+          echo "   - Total review files: $TOTAL_FILES"
+          echo "   - All batches have flat structure"
+          echo "   - All batches have valid summary.json"
+
       - name: Consolidate reviews
         uses: softlink-dev/.github/.github/actions/consolidate-batches@main
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Validate consolidation output
+        shell: bash
+        run: |
+          echo "🔍 Validating consolidation output..."
+          
+          # Check current directory contents
+          echo "Current directory contents:"
+          ls -la || echo "⚠️  WARNING: ls command failed"
+          
+          # Check for expected consolidation files
+          if [ ! -f "consolidate_review.md" ]; then
+            echo "❌ ERROR: consolidate_review.md not found"
+            exit 1
+          fi
+          
+          if [ ! -f "consolidate_summary.md" ]; then
+            echo "❌ ERROR: consolidate_summary.md not found"
+            exit 1
+          fi
+          
+          # Check file sizes with error handling
+          REVIEW_SIZE=$(wc -c < consolidate_review.md 2>/dev/null || echo '0')
+          SUMMARY_SIZE=$(wc -c < consolidate_summary.md 2>/dev/null || echo '0')
+          
+          echo "✅ Consolidation output validation passed:"
+          echo "   - consolidate_review.md: $REVIEW_SIZE bytes"
+          echo "   - consolidate_summary.md: $SUMMARY_SIZE bytes"
+          
+          # Check for minimum content
+          if [ "$REVIEW_SIZE" -lt 100 ]; then
+            echo "⚠️  WARNING: consolidate_review.md seems very small ($REVIEW_SIZE bytes)"
+          fi
+          
+          if [ "$SUMMARY_SIZE" -lt 50 ]; then
+            echo "⚠️  WARNING: consolidate_summary.md seems very small ($SUMMARY_SIZE bytes)"
+          fi
+          
+          echo "✅ Consolidation validation completed successfully"
 
       - name: Commit review results into PR branch (if allowed and requested)
         if: |
@@ -55,7 +166,7 @@ jobs:
           echo "::debug::PR number: ${{ github.event.pull_request.number }}"
           echo "::debug::PR head ref: ${{ github.event.pull_request.head.ref }}"
 
-          OUT_DIR=".github/review-results"
+          OUT_DIR=".github/review-results/PR-${{ github.event.pull_request.number }}"
           echo "::debug::Creating output directory: $OUT_DIR"
           mkdir -p "$OUT_DIR"
 
@@ -69,6 +180,16 @@ jobs:
           if [ -f "consolidate_summary.md" ]; then
             cp consolidate_summary.md "$OUT_DIR/SUMMARY.md"
           fi
+          
+          # Copy debug prompts from batch artifacts to prompt-log folder
+          echo "::debug::Copying debug prompts from batch artifacts"
+          mkdir -p "$OUT_DIR/prompt-log"
+          for batch_dir in review-batch-*; do
+            if [ -d "$batch_dir" ] && [ -d "$batch_dir/prompt-log" ]; then
+              echo "::debug::Copying prompts from $batch_dir/prompt-log/"
+              cp -r "$batch_dir/prompt-log/"* "$OUT_DIR/prompt-log/" 2>/dev/null || echo "::debug::No prompt files found in $batch_dir"
+            fi
+          done
 
           echo "::debug::Files created in $OUT_DIR:"
           ls -la "$OUT_DIR"/
@@ -96,7 +217,9 @@ jobs:
           
           - Detailed review: $OUT_DIR/DETAILED-REVIEW.md
           - Summary: $OUT_DIR/SUMMARY.md
-          - Debug prompts: $OUT_DIR/PROMPT-*.md"; then
+          - Debug prompts: $OUT_DIR/prompt-log/PROMPT-*.md
+          
+          Files committed to: $OUT_DIR/"; then
               echo "::debug::Commit successful"
               if git push origin "$current_branch"; then
                 echo "::debug::Push successful"

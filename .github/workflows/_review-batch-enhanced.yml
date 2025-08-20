@@ -52,10 +52,26 @@ jobs:
       - name: Debug batch input
         shell: bash
         run: |
+          echo "🔍 Debug: Starting batch input analysis..."
+          
+          # Safely output batch JSON input
           echo "Batch JSON input: ${{ inputs.batch_json }}"
-          echo "Batch ID: $(echo '${{ inputs.batch_json }}' | jq -r '.id // \"unknown\"')"
-          echo "Batch items count: $(echo '${{ inputs.batch_json }}' | jq -r '.items | length // 0')"
-          echo "Batch items: $(echo '${{ inputs.batch_json }}' | jq -r '.items[].path // \"none\"')"
+          
+          # Safely check if jq is available
+          if ! command -v jq &> /dev/null; then
+            echo "⚠️  WARNING: jq not available, skipping JSON analysis"
+            echo "Batch ID: unknown (jq not available)"
+            echo "Batch items count: unknown (jq not available)"
+            echo "Batch items: unknown (jq not available)"
+            exit 0
+          fi
+          
+          # Safely analyze batch JSON with error handling
+          echo "Batch ID: $(echo '${{ inputs.batch_json }}' | jq -r '.id // \"unknown\"' 2>/dev/null || echo 'error')"
+          echo "Batch items count: $(echo '${{ inputs.batch_json }}' | jq -r '.items | length // 0' 2>/dev/null || echo 'error')"
+          echo "Batch items: $(echo '${{ inputs.batch_json }}' | jq -r '.items[].path // \"none\"' 2>/dev/null || echo 'error')"
+          
+          echo "✅ Debug: Batch input analysis completed"
 
       - name: Checkout repo (full history for git show)
         uses: actions/checkout@v4
@@ -108,5 +124,69 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: review-batch-${{ fromJson(inputs.batch_json).id }}
-          path: reviews/
+          path: .
           if-no-files-found: warn
+
+      - name: Validate batch review artifact structure
+        shell: bash
+        run: |
+          echo "🔍 Validating batch review artifact structure..."
+          
+          # Safely get batch ID for context with error handling
+          BATCH_ID=$(echo '${{ inputs.batch_json }}' | jq -r '.id // "unknown"' 2>/dev/null || echo 'unknown')
+          echo "Validating batch $BATCH_ID"
+          
+          # Check for expected files in current directory
+          echo "Current directory contents:"
+          ls -la || echo "⚠️  WARNING: ls command failed"
+          
+          # Check for summary.json
+          if [ ! -f "summary.json" ]; then
+            echo "❌ ERROR: summary.json not found in batch output"
+            exit 1
+          fi
+          
+          # Safely check if jq is available
+          if ! command -v jq &> /dev/null; then
+            echo "⚠️  WARNING: jq not available, skipping JSON validation"
+            echo "✅ Summary.json exists (validation skipped)"
+            TOTAL="unknown"
+            PROCESSED="unknown"
+            BATCH_ID_IN_SUMMARY="unknown"
+          else
+            # Validate summary.json structure
+            if ! jq -e '.' summary.json > /dev/null 2>&1; then
+              echo "❌ ERROR: summary.json is not valid JSON"
+              exit 1
+            fi
+            
+            # Check summary.json fields with error handling
+            TOTAL=$(jq -r '.total // 0' summary.json 2>/dev/null || echo 'error')
+            PROCESSED=$(jq -r '.processed // 0' summary.json 2>/dev/null || echo 'error')
+            BATCH_ID_IN_SUMMARY=$(jq -r '.batch_id // "unknown"' summary.json 2>/dev/null || echo 'error')
+          fi
+          
+          echo "✅ Summary.json validation passed:"
+          echo "   - Total files: $TOTAL"
+          echo "   - Processed files: $PROCESSED"
+          echo "   - Batch ID: $BATCH_ID_IN_SUMMARY"
+          
+          # Check for review files (should be .md files, not summary.json)
+          REVIEW_FILES=$(find . -name "*.md" -type f | grep -v summary.json | wc -l 2>/dev/null || echo '0')
+          echo "✅ Found $REVIEW_FILES review files"
+          
+          # Check for prompt-log directory
+          if [ -d "prompt-log" ]; then
+            PROMPT_COUNT=$(find prompt-log -name "*.md" -type f | wc -l 2>/dev/null || echo '0')
+            echo "✅ Found $PROMPT_COUNT debug prompt files in prompt-log/"
+          else
+            echo "⚠️  WARNING: prompt-log directory not found"
+          fi
+          
+          # Validate flat structure (no nested reviews directory)
+          if [ -d "reviews" ]; then
+            echo "❌ ERROR: Found nested 'reviews' directory - expected flat structure"
+            exit 1
+          fi
+          
+          echo "✅ Batch review artifact validation passed"

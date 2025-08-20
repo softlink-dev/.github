@@ -22,15 +22,107 @@ function gitShow(args) {
 
 function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
 
-async function callGemini(model, prompt) {
-  for (let i=0;i<3;i++){
-    await sleep(2000);
+// Enhanced API call with exponential backoff and rate limit handling
+async function callGemini(model, prompt, attempt = 1) {
+  const maxAttempts = 5;
+  const baseDelay = 1000; // 1 second base delay
+  
+  try {
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+    const delay = baseDelay * Math.pow(2, attempt - 1);
+    
+    if (attempt > 1) {
+      core.info(`🔄 Retry attempt ${attempt}/${maxAttempts} after ${delay}ms delay`);
+      await sleep(delay);
+    }
+    
+    // Try primary model first
     let r = sh('gemini', ['--yolo','--model', model, '--prompt', prompt]);
-    if (r.code === 0 && r.out.trim()) return r.out;
+    if (r.code === 0 && r.out.trim()) {
+      core.info(`✅ API call successful on attempt ${attempt}`);
+      return r.out;
+    }
+    
+    // Check for rate limit error (429)
+    if (r.err.includes('429') || r.err.includes('rate limit') || r.err.includes('quota')) {
+      core.warning(`⚠️ Rate limit detected on attempt ${attempt}, will retry with exponential backoff`);
+      if (attempt < maxAttempts) {
+        return await callGemini(model, prompt, attempt + 1);
+      } else {
+        core.error(`❌ Rate limit exceeded after ${maxAttempts} attempts`);
+        return '';
+      }
+    }
+    
+    // Try fallback model
     r = sh('gemini', ['--yolo','--model', 'gemini-2.0-pro', '--prompt', prompt]);
-    if (r.code === 0 && r.out.trim()) return r.out;
+    if (r.code === 0 && r.out.trim()) {
+      core.info(`✅ Fallback API call successful on attempt ${attempt}`);
+      return r.out;
+    }
+    
+    // Check for rate limit error in fallback
+    if (r.err.includes('429') || r.err.includes('rate limit') || r.err.includes('quota')) {
+      core.warning(`⚠️ Rate limit detected in fallback on attempt ${attempt}, will retry with exponential backoff`);
+      if (attempt < maxAttempts) {
+        return await callGemini(model, prompt, attempt + 1);
+      } else {
+        core.error(`❌ Rate limit exceeded after ${maxAttempts} attempts`);
+        return '';
+      }
+    }
+    
+    // If we get here, it's not a rate limit error, but the call failed
+    if (attempt < maxAttempts) {
+      core.warning(`⚠️ API call failed on attempt ${attempt}, retrying...`);
+      return await callGemini(model, prompt, attempt + 1);
+    } else {
+      core.error(`❌ API call failed after ${maxAttempts} attempts`);
+      return '';
+    }
+    
+  } catch (error) {
+    core.error(`❌ Unexpected error in API call: ${error.message}`);
+    if (attempt < maxAttempts) {
+      return await callGemini(model, prompt, attempt + 1);
+    }
+    return '';
   }
-  return '';
+}
+
+// Queue-based concurrency limiter for sequential processing
+class ConcurrencyLimiter {
+  constructor(maxConcurrent = 1) {
+    this.maxConcurrent = maxConcurrent;
+    this.running = 0;
+    this.queue = [];
+  }
+  
+  async run(task) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ task, resolve, reject });
+      this.processQueue();
+    });
+  }
+  
+  async processQueue() {
+    if (this.running >= this.maxConcurrent || this.queue.length === 0) {
+      return;
+    }
+    
+    this.running++;
+    const { task, resolve, reject } = this.queue.shift();
+    
+    try {
+      const result = await task();
+      resolve(result);
+    } catch (error) {
+      reject(error);
+    } finally {
+      this.running--;
+      this.processQueue();
+    }
+  }
 }
 
 function sanitize(p){ return p.replace(/[\/\\:*?"<>|]/g,'_'); }
@@ -258,18 +350,21 @@ You are reviewing ONLY \`{{FILE_PATH}}\`. You cannot see any other files or the 
     }
 
     // Create output directories (LESSON: Flat structure from sequential system)
-    fs.mkdirSync('reviews', { recursive: true });
-    fs.mkdirSync('.github/review-results', { recursive: true });
+    fs.mkdirSync('prompt-log', { recursive: true });
 
     // Load enhanced prompt template (LESSON: Better AI prompts from sequential system)
     const promptTemplate = loadPromptTemplate();
     core.info('📝 Using enhanced prompt template with anti-hallucination instructions');
 
-    // Process each file in the batch (LESSON: Batch processing from batch system)
+    // Process each file in the batch with concurrency control (LESSON: Sequential processing to prevent API rate limits)
     let processedCount = 0;
     const totalFiles = batch.items.length;
 
     core.info(`🚀 Starting batch processing: ${totalFiles} files in batch ${batch.id || 'unknown'}`);
+    core.info(`🔒 Using sequential processing to prevent API rate limits`);
+
+    // Create concurrency limiter for sequential processing (max 1 concurrent API call)
+    const limiter = new ConcurrencyLimiter(1);
 
     for (const item of batch.items) {
       const sha = item.sha;
@@ -284,6 +379,7 @@ You are reviewing ONLY \`{{FILE_PATH}}\`. You cannot see any other files or the 
       }
 
       core.info(`📄 Processing file ${processedCount + 1}/${totalFiles}: ${filePath} (${status})`);
+      core.info(`⏳ Waiting for API slot (sequential processing enabled)`);
 
       ensureCommit(sha);
 
@@ -338,20 +434,29 @@ You are reviewing ONLY \`{{FILE_PATH}}\`. You cannot see any other files or the 
 
       // LESSON: Save debug prompt (from sequential system)
       const safeFilename = sanitize(filePath);
-      const debugPromptPath = `.github/review-results/PROMPT-${safeFilename}.md`;
+      const debugPromptPath = `prompt-log/PROMPT-${safeFilename}.md`;
       fs.writeFileSync(debugPromptPath, prompt, 'utf8');
       core.info(`🔍 Debug prompt saved to: ${debugPromptPath}`);
 
-      // Call Gemini (LESSON: Retry logic from both systems)
-      const body = await callGemini(model, prompt);
+      // Call Gemini with concurrency control (LESSON: Sequential processing to prevent API rate limits)
+      const body = await limiter.run(async () => {
+        const result = await callGemini(model, prompt);
+        // Small delay between API calls to be extra safe
+        await sleep(500);
+        return result;
+      });
 
       // LESSON: Flat output structure (from sequential system)
-      const outDir = `reviews`;
+      const outDir = `.`;
       const header = `## ${filePath} @ ${sha.slice(0,8)}\n\n**Mode:** ${mode}  |  **Lines:** ${fileLines || 0}\n\n`;
       fs.writeFileSync(`${outDir}/${safeFilename}.md`, header + (body || 'Review failed - no response from AI service.') + `\n\n---\n`, 'utf8');
 
-      core.info(`✅ Completed: ${filePath}`);
-      processedCount++;
+      if (body) {
+        core.info(`✅ Completed: ${filePath}`);
+        processedCount++;
+      } else {
+        core.warning(`⚠️ Failed to get review for: ${filePath}`);
+      }
 
       // LESSON: Progress tracking (from sequential system)
       if (processedCount % 5 === 0 || processedCount === totalFiles) {
@@ -367,12 +472,12 @@ You are reviewing ONLY \`{{FILE_PATH}}\`. You cannot see any other files or the 
       batch_id: batch.id || 'unknown',
       timestamp: new Date().toISOString()
     };
-    fs.writeFileSync('reviews/summary.json', JSON.stringify(summary, null, 2), 'utf8');
+    fs.writeFileSync('summary.json', JSON.stringify(summary, null, 2), 'utf8');
 
     // LESSON: Enhanced logging (from sequential system)
     core.info(`🎉 Batch processing complete: ${processedCount}/${totalFiles} files processed successfully`);
-    core.info(`📁 Results saved to: reviews/ directory`);
-    core.info(`🔍 Debug prompts saved to: .github/review-results/ directory`);
+    core.info(`📁 Results saved to: current directory (flat structure)`);
+    core.info(`🔍 Debug prompts saved to: prompt-log/ directory`);
 
   } catch (e) {
     core.setFailed(e.message);

@@ -91,12 +91,73 @@ jobs:
       - name: Debug batches output
         shell: bash
         run: |
+          echo "🔍 Debug: Starting batches output analysis..."
+          
+          # Safely output batches content
           echo "Batches output: ${{ steps.batch.outputs.batches }}"
-          echo "Batches length: $(echo '${{ steps.batch.outputs.batches }}' | jq -r 'length // 0')"
-          echo "First batch: $(echo '${{ steps.batch.outputs.batches }}' | jq -r '.[0] // \"none\"')"
+          
+          # Safely write to temp file with fallback
+          echo "${{ steps.batch.outputs.batches }}" > /tmp/batches.json || echo "{}" > /tmp/batches.json
+          
+          # Safely check if jq is available
+          if ! command -v jq &> /dev/null; then
+            echo "⚠️  WARNING: jq not available, skipping JSON analysis"
+            echo "Batches length: unknown (jq not available)"
+            echo "First batch: unknown (jq not available)"
+            exit 0
+          fi
+          
+          # Safely analyze JSON with error handling
+          echo "Batches length: $(jq -r 'length // 0' /tmp/batches.json 2>/dev/null || echo 'error')"
+          echo "First batch: $(jq -r '.[0] // "none"' /tmp/batches.json 2>/dev/null || echo 'error')"
+          
+          echo "✅ Debug: Batches output analysis completed"
 
       - name: Upload batches artifact
         uses: actions/upload-artifact@v4
         with:
           name: review-batches
           path: ${{ runner.temp }}/batches.json
+
+      - name: Validate batches artifact structure
+        shell: bash
+        run: |
+          echo "🔍 Validating batches artifact structure..."
+          
+          # Check if batches.json was created
+          if [ ! -f "${{ runner.temp }}/batches.json" ]; then
+            echo "❌ ERROR: batches.json not found in runner temp directory"
+            exit 1
+          fi
+          
+          # Safely check if jq is available
+          if ! command -v jq &> /dev/null; then
+            echo "⚠️  WARNING: jq not available, skipping JSON validation"
+            echo "✅ Batches.json exists (validation skipped)"
+            BATCH_COUNT="unknown"
+          else
+            # Validate JSON structure
+            if ! jq -e '.' "${{ runner.temp }}/batches.json" > /dev/null 2>&1; then
+              echo "❌ ERROR: batches.json is not valid JSON"
+              exit 1
+            fi
+            
+            # Check if it's an array
+            if ! jq -e 'type == "array"' "${{ runner.temp }}/batches.json" > /dev/null 2>&1; then
+              echo "❌ ERROR: batches.json is not an array"
+              exit 1
+            fi
+            
+            # Check array length with error handling
+            BATCH_COUNT=$(jq -r 'length' "${{ runner.temp }}/batches.json" 2>/dev/null || echo 'error')
+          fi
+          
+          echo "✅ Found $BATCH_COUNT batches in artifact"
+          
+          if [ "$BATCH_COUNT" = "0" ]; then
+            echo "⚠️  WARNING: No batches found - this may be expected for small PRs"
+          elif [ "$BATCH_COUNT" = "error" ]; then
+            echo "⚠️  WARNING: Could not determine batch count"
+          fi
+          
+          echo "✅ Batches artifact validation passed"
