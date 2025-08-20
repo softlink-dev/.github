@@ -43,6 +43,18 @@ runs:
          echo "Looking for review-batch-* patterns:"
          ls review-batch-* 2>/dev/null || echo "No review-batch-* found"
          
+         # Debug: Check for any artifacts
+         echo "All artifacts in current directory:"
+         ls -la
+         
+         # Debug: Check for any files with 'review' in the name
+         echo "Files with 'review' in name:"
+         find . -name "*review*" -type f 2>/dev/null || echo "No review files found"
+         
+         # Debug: Check for any directories with 'batch' in the name
+         echo "Directories with 'batch' in name:"
+         find . -name "*batch*" -type d 2>/dev/null || echo "No batch directories found"
+         
          # Debug: Check the structure of batch directories
          for batch_dir in review-batch-*; do
            if [ -d "$batch_dir" ]; then
