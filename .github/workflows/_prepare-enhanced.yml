@@ -93,7 +93,7 @@ jobs:
         run: |
           echo "Batches output: ${{ steps.batch.outputs.batches }}"
           echo "Batches length: $(echo '${{ steps.batch.outputs.batches }}' | jq -r 'length // 0')"
-          echo "First batch: $(echo '${{ steps.batch.outputs.batches }}' | jq -r '.[0] // "none"')"
+          echo "First batch: $(echo '${{ steps.batch.outputs.batches }}' | jq -r '.[0] // \"none\"')"
 
       - name: Upload batches artifact
         uses: actions/upload-artifact@v4
