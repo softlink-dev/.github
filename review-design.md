@@ -565,8 +565,17 @@ This design document provides a complete technical specification for the working
 - **Status**: [OPEN] / [INVESTIGATING] / [FIXED] / [VERIFIED]
 - **Test Results**: Results after applying the fix
 
+**IMPORTANT**: Do not mark errors as [FIXED] immediately after applying changes. Record the attempted fix and wait for user confirmation from testing before updating status to [FIXED].
+
 ### Error Log
 
-*No errors reported yet. This section will be updated as issues are discovered during testing.*
+#### Error 1: Debug Step Syntax Error in _prepare-enhanced.yml
+- **Report Date**: 2025-01-19
+- **Error Description**: Syntax error in debug step due to nested quotes in jq commands
+- **Investigation**: The debug step in `_prepare-enhanced.yml` has nested single quotes in jq commands causing bash syntax error
+- **Root Cause**: `jq -r ''length // 0''` and `jq -r ''.[0] // "none"''` have conflicting quote nesting due to YAML multiline processing
+- **Fix Applied**: Created separate script file `.github/scripts/debug-batches.sh` to avoid YAML multiline quote escaping issues
+- **Status**: [INVESTIGATING]
+- **Test Results**: Script created and workflow updated to use external script instead of inline YAML multiline - awaiting user confirmation from testing
 
 ---
