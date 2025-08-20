@@ -57,19 +57,8 @@ jobs:
           # Safely output batch JSON input
           echo "Batch JSON input: ${{ inputs.batch_json }}"
           
-          # Safely check if jq is available
-          if ! command -v jq &> /dev/null; then
-            echo "⚠️  WARNING: jq not available, skipping JSON analysis"
-            echo "Batch ID: unknown (jq not available)"
-            echo "Batch items count: unknown (jq not available)"
-            echo "Batch items: unknown (jq not available)"
-            exit 0
-          fi
-          
-          # Safely analyze batch JSON with error handling
-          echo "Batch ID: $(echo '${{ inputs.batch_json }}' | jq -r '.id // \"unknown\"' 2>/dev/null || echo 'error')"
-          echo "Batch items count: $(echo '${{ inputs.batch_json }}' | jq -r '.items | length // 0' 2>/dev/null || echo 'error')"
-          echo "Batch items: $(echo '${{ inputs.batch_json }}' | jq -r '.items[].path // \"none\"' 2>/dev/null || echo 'error')"
+          # Simple character count to verify input is not empty
+          echo "Batch input length: ${#inputs.batch_json}"
           
           echo "✅ Debug: Batch input analysis completed"
 
