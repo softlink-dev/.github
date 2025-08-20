@@ -614,4 +614,13 @@ This design document provides a complete technical specification for the working
 - **Status**: [INVESTIGATING]
 - **Test Results**: Removed debug step completely - awaiting user confirmation from testing
 
+#### Error 6: Upload Artifact Uploading Entire Repository
+- **Report Date**: 2025-01-19
+- **Error Description**: Upload batch artifact step is uploading the entire repository instead of just batch review files
+- **Investigation**: The `path: .` in upload-artifact is uploading everything in current directory, including the entire checked-out repository
+- **Root Cause**: Upload artifact path is too broad - should only upload the specific batch review files created by the process-batch-enhanced action
+- **Fix Applied**: Changed path from `path: .` to specific patterns: `*.md`, `summary.json`, and `prompt-log/`
+- **Status**: [INVESTIGATING]
+- **Test Results**: Updated upload artifact to only upload batch review files - awaiting user confirmation from testing
+
 ---
