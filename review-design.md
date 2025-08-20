@@ -610,5 +610,19 @@ This design document provides a complete technical specification for the working
 **IMPORTANT**: Do not mark errors as [FIXED] immediately after applying changes. Record the attempted fix and wait for user confirmation from testing before updating status to [FIXED].
 
 ### Error Log
-## No errors yet
+
+#### Error #1: Artifact Upload Path Mismatch
+- **Report Date**: 2025-01-27
+- **Error Description**: Upload batch artifact does not show any batches - Warning: No files were found with the provided path: /batches.json. No artifacts will be uploaded.
+- **Investigation**: The `create-batches` action creates batches.json in `${RUNNER_TEMP}/batches.json` but the upload-artifact steps use incorrect path syntax
+- **Root Cause**: Path mismatch between where file is created (`${RUNNER_TEMP}/batches.json`) and where upload looks for it (`${{ env.RUNNER_TEMP }}/batches.json` vs `/batches.json`)
+- **Fix Applied**: Changed upload artifact paths from `${{ env.RUNNER_TEMP }}/batches.json` to `${{ runner.temp }}/batches.json` to match validation step syntax
+- **Status**: [OPEN] - Awaiting test confirmation
+- **Test Results**: [PENDING]
+- **Clues and diagnostics**: 
+  - create-batches action creates file at: `${RUNNER_TEMP}/batches.json` (line 94)
+  - upload-artifact tries to find file at: `${{ env.RUNNER_TEMP }}/batches.json` (lines 95, 101)
+  - Validation step successfully finds file at: `${{ runner.temp }}/batches.json` (line 109)
+  - Inconsistent variable syntax: `env.RUNNER_TEMP` vs `runner.temp`
+
 ---

@@ -92,13 +92,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: batches-json
-          path: ${{ env.RUNNER_TEMP }}/batches.json
+          path: ${{ runner.temp }}/batches.json
 
       - name: Upload batches artifact
         uses: actions/upload-artifact@v4
         with:
           name: review-batches
-          path: ${{ env.RUNNER_TEMP }}/batches.json
+          path: ${{ runner.temp }}/batches.json
 
       - name: Validate batches artifact structure
         shell: bash
