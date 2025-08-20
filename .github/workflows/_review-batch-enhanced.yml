@@ -49,15 +49,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - name: Debug batch input
-        shell: bash
-        run: |
-          echo "🔍 Debug: Starting batch input analysis..."
-          
-          # Safely output batch JSON input
-          echo "Batch JSON input: ${{ inputs.batch_json }}"
-          
-          echo "✅ Debug: Batch input analysis completed"
+
 
       - name: Checkout repo (full history for git show)
         uses: actions/checkout@v4
