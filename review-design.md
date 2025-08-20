@@ -574,8 +574,8 @@ This design document provides a complete technical specification for the working
 - **Error Description**: Syntax error in debug step due to nested quotes in jq commands
 - **Investigation**: The debug step in `_prepare-enhanced.yml` has nested single quotes in jq commands causing bash syntax error
 - **Root Cause**: `jq -r ''length // 0''` and `jq -r ''.[0] // "none"''` have conflicting quote nesting due to YAML multiline processing
-- **Fix Applied**: Created separate script file `.github/scripts/debug-batches.sh` to avoid YAML multiline quote escaping issues
+- **Fix Applied**: Reverted to inline script but using double quotes instead of single quotes to avoid YAML multiline quote escaping issues
 - **Status**: [INVESTIGATING]
-- **Test Results**: Script created and workflow updated to use external script instead of inline YAML multiline - awaiting user confirmation from testing
+- **Test Results**: Updated workflow to use double quotes in jq commands - awaiting user confirmation from testing
 
 ---
