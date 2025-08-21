@@ -38,8 +38,25 @@ This system is an **enhanced parallel version** of a working sequential AI code 
 - **External Services**: Google Gemini AI API
 - **Tools**: Node.js 20, Gemini CLI
 
-### Reusable Workflows and Actions
-The workflows and actions used in this system are designed to be reusable and are stored in a central, public repository named `.github`. This repository follows GitHub's convention for reusable workflows by storing them in a `.github` folder within the repository. When you see actions referenced with a path like `softlink-dev/.github/.github/actions/consolidate-batches@main`, it is correctly referencing an action in this central repository, not a local action within the calling repository.
+### Reusable Workflows and Actions Architecture
+
+**Central Repository Design:**
+The workflows and actions used in this system are designed to be reusable and are stored in a central, public repository named `.github`. This repository follows GitHub's convention for reusable workflows by storing them in a `.github` folder within the repository.
+
+**External Action References:**
+When you see actions referenced with a path like `softlink-dev/.github/.github/actions/consolidate-batches@main`, it is correctly referencing an action in this central repository, not a local action within the calling repository.
+
+**Always Use Main Branch:**
+- **Strategy**: All workflows and actions reference the `@main` branch of the external repository
+- **Benefit**: This allows us to update workflows and test them on older PRs without modifying the caller repository
+- **Architecture**: We are using reusable workflows and actions from the public `softlink-dev/.github` repository which are invoked from caller repositories
+- **Consistency**: Both the caller repository and the external repository may have similar action structures, but the workflows always use the external ones for consistency and centralized updates
+
+**Why This Approach:**
+1. **Centralized Updates**: Updates to the review system can be made in one place and immediately benefit all repositories
+2. **Testing Flexibility**: Can test new workflow versions against existing PRs by deploying to main branch
+3. **Consistency**: All repositories using the system get the same behavior and bug fixes
+4. **Maintenance**: Single point of maintenance for the entire review system
 
 ### Parallelization Control
 **Purpose**: Prevent overwhelming API quotas and ensure reliable processing
@@ -614,18 +631,30 @@ This design document provides a complete technical specification for the working
 
 ### Error Log
 
-#### Error #1: Artifact Upload Path Mismatch
-- **Report Date**: 2025-01-27
-- **Error Description**: Upload batch artifact does not show any batches - Warning: No files were found with the provided path: /batches.json. No artifacts will be uploaded.
-- **Investigation**: The `create-batches` action creates batches.json in `${RUNNER_TEMP}/batches.json` but the upload-artifact steps use incorrect path syntax
-- **Root Cause**: Path mismatch between where file is created (`${RUNNER_TEMP}/batches.json`) and where upload looks for it (`${{ env.RUNNER_TEMP }}/batches.json` vs `/batches.json`)
-- **Fix Applied**: Changed upload artifact paths from `${{ env.RUNNER_TEMP }}/batches.json` to `${{ runner.temp }}/batches.json` to match validation step syntax
-- **Status**: [OPEN] - Awaiting test confirmation
-- **Test Results**: [PENDING]
+#### Error #1: Artifact Download Directory Issue (FIXED)
+- **Report Date**: 2025-08-21
+- **Error Description**: The summarize workflow was downloading files to root folder instead of using workspace folder, causing validation to list all repository files
+- **Investigation**: Found that download-artifact action was using `path: ./` which downloads to root directory, mixing artifacts with repository source code
+- **Root Cause**: Incorrect download path configuration in `_summarize-enhanced.yml`
+- **Fix Applied**: Changed download path from `./` to `.github/review-work/downloaded/` and updated all validation and processing steps to use the new path
+- **Status**: [FIXED]
+- **Test Results**: Download now happens to dedicated workspace folder, keeping artifacts separate from source code
 - **Clues and diagnostics**: 
-  - create-batches action creates file at: `${RUNNER_TEMP}/batches.json` (line 94)
-  - upload-artifact tries to find file at: `${{ env.RUNNER_TEMP }}/batches.json` (lines 95, 101)
-  - Validation step successfully finds file at: `${{ runner.temp }}/batches.json` (line 109)
-  - Inconsistent variable syntax: `env.RUNNER_TEMP` vs `runner.temp`
+  - Download directory now: `.github/review-work/downloaded/`
+  - All validation steps updated to check correct directory
+  - Consolidate action workspace parameter updated to point to download directory
+
+#### Error #2: Summary Prompt File Not Found (FIXED)
+- **Report Date**: 2025-08-21  
+- **Error Description**: Error: summary-prompt.md not found in any expected location when consolidate action tries to generate AI summary
+- **Investigation**: External action `softlink-dev/.github/.github/actions/consolidate-batches@main` cannot find summary-prompt.md file
+- **Root Cause**: External action is looking for summary-prompt.md using `$(dirname "$0")` which doesn't work in GitHub Actions context; the external action can't access files from the caller repository
+- **Fix Applied**: Added a step to copy the local summary-prompt.md file to the download directory using fully qualified paths with ${{ github.workspace }} before calling the external consolidate action
+- **Status**: [FIXED]
+- **Test Results**: [PENDING] - Awaiting test confirmation
+- **Clues and diagnostics**: 
+  - External action tried paths: `$(dirname "$0")/summary-prompt.md`, `./summary-prompt.md`, `.github/actions/consolidate-batches/summary-prompt.md`
+  - Solution: Copy local `${{ github.workspace }}/.github/actions/consolidate-batches/summary-prompt.md` to `$DOWNLOAD_DIR/summary-prompt.md` using fully qualified paths
+  - External action now finds the file in its working directory
 
 ---
