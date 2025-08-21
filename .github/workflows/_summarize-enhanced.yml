@@ -28,7 +28,7 @@ jobs:
       - name: Download all batch artifacts
         uses: actions/download-artifact@v4
         with:
-          path: ./
+          path: .github/review-work/downloaded/
           pattern: review-batch-*
           merge-multiple: false
           create-artifact-meta: false
@@ -39,19 +39,27 @@ jobs:
         run: |
           echo "🔍 Validating downloaded batch artifacts..."
           
-          # Check current directory contents (only batch-related files)
-          echo "Current directory contents (batch artifacts only):"
-          ls -la review-batch-* 2>/dev/null || echo "⚠️  WARNING: No batch directories found"
-          echo "All files in current directory:"
-          ls -la || echo "⚠️  WARNING: ls command failed"
+          DOWNLOAD_DIR=".github/review-work/downloaded"
+          
+          # Check if download directory exists
+          if [ ! -d "$DOWNLOAD_DIR" ]; then
+            echo "❌ ERROR: Download directory $DOWNLOAD_DIR does not exist"
+            exit 1
+          fi
+          
+          # Check download directory contents (only batch-related files)
+          echo "Download directory contents (batch artifacts only):"
+          ls -la "$DOWNLOAD_DIR"/review-batch-* 2>/dev/null || echo "⚠️  WARNING: No batch directories found"
+          echo "All files in download directory:"
+          ls -la "$DOWNLOAD_DIR" || echo "⚠️  WARNING: ls command failed"
           
           # Check for batch directories with error handling
-          BATCH_DIRS=$(find . -name "review-batch-*" -type d | wc -l 2>/dev/null || echo '0')
+          BATCH_DIRS=$(find "$DOWNLOAD_DIR" -name "review-batch-*" -type d | wc -l 2>/dev/null || echo '0')
           echo "Found $BATCH_DIRS batch directories"
           
           if [ "$BATCH_DIRS" -eq 0 ]; then
             echo "❌ ERROR: No batch artifacts found for consolidation"
-            echo "Expected directories: review-batch-*"
+            echo "Expected directories: $DOWNLOAD_DIR/review-batch-*"
             exit 1
           fi
           
@@ -59,7 +67,7 @@ jobs:
           TOTAL_FILES=0
           TOTAL_BATCHES=0
           
-          for batch_dir in review-batch-*; do
+          for batch_dir in "$DOWNLOAD_DIR"/review-batch-*; do
             if [ -d "$batch_dir" ]; then
               TOTAL_BATCHES=$((TOTAL_BATCHES + 1))
               echo "Validating batch directory: $batch_dir"
@@ -112,7 +120,7 @@ jobs:
         uses: softlink-dev/.github/.github/actions/consolidate-batches@main
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          workspace: ${{ github.workspace }}
+          workspace: ${{ github.workspace }}/.github/review-work/downloaded
 
       - name: Validate consolidation output
         shell: bash
@@ -189,7 +197,8 @@ jobs:
           # Copy debug prompts from batch artifacts to prompt-log folder
           echo "::debug::Copying debug prompts from batch artifacts"
           mkdir -p "$OUT_DIR/prompt-log"
-          for batch_dir in review-batch-*; do
+          DOWNLOAD_DIR=".github/review-work/downloaded"
+          for batch_dir in "$DOWNLOAD_DIR"/review-batch-*; do
             if [ -d "$batch_dir" ] && [ -d "$batch_dir/prompt-log" ]; then
               echo "::debug::Copying prompts from $batch_dir/prompt-log/"
               cp -r "$batch_dir/prompt-log/"* "$OUT_DIR/prompt-log/" 2>/dev/null || echo "::debug::No prompt files found in $batch_dir"
