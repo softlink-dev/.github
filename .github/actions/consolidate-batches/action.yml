@@ -161,7 +161,7 @@ runs:
           SUMMARY_TEMPLATE=$(cat "$SUMMARY_TEMPLATE_PATH")
           
           # Replace placeholder with actual review content
-          SUMMARY_PROMPT=$(echo "$SUMMARY_TEMPLATE" | sed "s/{{REVIEW_CONTENT}}/$(cat consolidate_review.md | sed 's/[[\]/\\&/g')/g")
+          SUMMARY_PROMPT=$(perl -pe 'BEGIN{undef $/} s/\{\{REVIEW_CONTENT\}\}/do{local $/; open my $fh,"<","consolidate_review.md"; <$fh>}/e' <<<"$SUMMARY_TEMPLATE")
 
           # Create summary using Gemini CLI
           SUMMARY_CONTENT=$(echo "$SUMMARY_PROMPT" | gemini --model gemini-2.5-pro --prompt - 2>/dev/null || echo "Summary generation failed")
