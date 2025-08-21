@@ -1,4 +1,4 @@
 @echo off
 echo "Starting Gemini-CLI..."
-SET GEMINI_API_KEY="AIzaSyD-9T2YTic33Z4Q4yWnuyeojQ4J5z8aX3U"
-gemini --model gemini-2.5-flash 
+SET GEMINI_API_KEY=AIzaSyCiJCVX-9-RsMgtCa-w2cyb9WyjSgDfSgE
+gemini --model gemini-2.5-pro 
