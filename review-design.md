@@ -33,10 +33,13 @@ This system is an **enhanced parallel version** of a working sequential AI code 
 ```
 
 ### Dependencies
-- **External Actions**: All actions are self-hosted in `.github/actions/`
+- **External Actions**: Actions are reusable and reside in a central public repository (`softlink-dev/.github`).
 - **Required Secrets**: `GEMINI_API_KEY`, `PAT_TOKEN`
 - **External Services**: Google Gemini AI API
 - **Tools**: Node.js 20, Gemini CLI
+
+### Reusable Workflows and Actions
+The workflows and actions used in this system are designed to be reusable and are stored in a central, public repository named `.github`. This repository follows GitHub's convention for reusable workflows by storing them in a `.github` folder within the repository. When you see actions referenced with a path like `softlink-dev/.github/.github/actions/consolidate-batches@main`, it is correctly referencing an action in this central repository, not a local action within the calling repository.
 
 ### Parallelization Control
 **Purpose**: Prevent overwhelming API quotas and ensure reliable processing

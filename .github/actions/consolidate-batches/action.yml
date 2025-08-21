@@ -5,6 +5,9 @@ inputs:
   gemini_api_key:
     description: 'Gemini API key for generating summaries'
     required: true
+  workspace:
+    description: 'The workspace directory where artifacts are downloaded'
+    required: true
 
 runs:
   using: composite
@@ -30,39 +33,21 @@ runs:
       run: |
         set -euo pipefail
         
+        cd ${{ inputs.workspace }}
+        
         echo "Starting simple batch consolidation..."
         
         # Get PR number for context
         PR_NUM="${{ github.event.pull_request.number || '' }}"
         
-        # Debug: List current directory contents
-        echo "Current directory contents:"
-        ls -la
-        
-                 # Debug: Check for batch artifacts
-         echo "Looking for review-batch-* patterns:"
-         ls review-batch-* 2>/dev/null || echo "No review-batch-* found"
-         
-         # Debug: Check for any artifacts
-         echo "All artifacts in current directory:"
-         ls -la
-         
-         # Debug: Check for any files with 'review' in the name
-         echo "Files with 'review' in name:"
-         find . -name "*review*" -type f 2>/dev/null || echo "No review files found"
-         
-         # Debug: Check for any directories with 'batch' in the name
-         echo "Directories with 'batch' in name:"
-         find . -name "*batch*" -type d 2>/dev/null || echo "No batch directories found"
-         
-         # Debug: Check the structure of batch directories
-         for batch_dir in review-batch-*; do
-           if [ -d "$batch_dir" ]; then
-             echo "Batch directory: $batch_dir"
-             ls -la "$batch_dir"
-             echo "Expected flat structure - files should be directly in batch directory"
-           fi
-         done
+        # Check for batch artifacts (minimal logging)
+        BATCH_DIRS_FOUND=false
+        if ls review-batch-* 1> /dev/null 2>&1; then
+          BATCH_DIRS_FOUND=true
+          echo "Found batch directories for consolidation"
+        else
+          echo "No review-batch-* directories found"
+        fi
         
         # Create detailed review by combining all batch results
         echo "# AI Code Review - Detailed Report ${PR_NUM:+for PR #$PR_NUM}" > consolidate_review.md
@@ -71,7 +56,7 @@ runs:
         echo "" >> consolidate_review.md
         
         # Check if we have batch artifacts
-        if ls review-batch-* 1> /dev/null 2>&1; then
+        if [ "$BATCH_DIRS_FOUND" = true ]; then
           echo "Found batch results, consolidating individual reviews..."
           
           echo "## 📊 Review Summary" >> consolidate_review.md
