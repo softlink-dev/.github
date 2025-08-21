@@ -116,27 +116,24 @@ jobs:
           echo "   - All batches have flat structure"
           echo "   - All batches have valid summary.json"
 
-      - name: Copy prompt template for consolidate action
+      - name: Download prompt template for consolidate action
         shell: bash
         run: |
-          echo "📋 Copying summary prompt template for external action..."
+          echo "📋 Downloading summary prompt template from external repo..."
           DOWNLOAD_DIR="${{ github.workspace }}/.github/review-work/downloaded"
-          PROMPT_FILE="${{ github.workspace }}/.github/actions/consolidate-batches/summary-prompt.md"
           
           # Ensure download directory exists
           mkdir -p "$DOWNLOAD_DIR"
           
-          # Copy the prompt template to where the external action expects it
-          if [ -f "$PROMPT_FILE" ]; then
-            cp "$PROMPT_FILE" "$DOWNLOAD_DIR/summary-prompt.md"
-            echo "✅ Copied summary-prompt.md to download directory"
-            echo "   Source: $PROMPT_FILE"
+          # Download the prompt template from the external repository
+          curl -o "$DOWNLOAD_DIR/summary-prompt.md" \
+               "https://raw.githubusercontent.com/softlink-dev/.github/main/.github/actions/consolidate-batches/summary-prompt.md"
+          
+          if [ -f "$DOWNLOAD_DIR/summary-prompt.md" ]; then
+            echo "✅ Downloaded summary-prompt.md to download directory"
             echo "   Target: $DOWNLOAD_DIR/summary-prompt.md"
           else
-            echo "❌ ERROR: Local summary-prompt.md not found at $PROMPT_FILE"
-            echo "Current working directory: $(pwd)"
-            echo "Workspace: ${{ github.workspace }}"
-            ls -la "${{ github.workspace }}/.github/actions/consolidate-batches/" || echo "Directory does not exist"
+            echo "❌ ERROR: Failed to download summary-prompt.md"
             exit 1
           fi
 
